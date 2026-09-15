@@ -15,6 +15,10 @@ on:
       environment:
         required: true
         type: string
+      pnpm_version:
+        required: false
+        type: string
+        default: '8.15.6'
 permissions: {}
 jobs:
   build:
@@ -32,8 +36,11 @@ jobs:
         with:
           node-version: '26.8.1'
       - name: Build candidate without deployment credentials or OIDC
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
         run: |
-          npm install --global pnpm@8.15.6
+          case "$PNPM_VERSION" in 8.15.6|10.12.4) ;; *) echo 'Unsupported edition pnpm version'; exit 1 ;; esac
+          npm install --global "pnpm@$PNPM_VERSION"
           pnpm install --frozen-lockfile
           pnpm exec playwright install --with-deps chromium
           pnpm verify

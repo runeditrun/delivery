@@ -10,7 +10,8 @@ customer installation broker with GitHub OIDC. The broker prepares the release
 for the configured owner acceptance policy.
 
 The caller supplies `installation_id`, the HTTPS `broker_url`, the accepted
-`environment`, and `artifact_file` (`lamp-worker-artifact.json` or
+`environment`, `pnpm_version` (8.15.6 for Lamp or 10.12.4 for HappyToHelp),
+and `artifact_file` (`lamp-worker-artifact.json` or
 `happytohelp-worker-artifact.json`). The repository must provide the maintained
 `pnpm verify` command and `scripts/build-delivery-artifact.mjs`.
 
