@@ -15,6 +15,10 @@ on:
       environment:
         required: true
         type: string
+      verification_profile:
+        required: false
+        type: string
+        default: full
       pnpm_version:
         required: false
         type: string
@@ -50,14 +54,21 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
         timeout-minutes: 5
       - name: Install edition verification tools
+        if: inputs.verification_profile == 'full'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxml2-utils
         timeout-minutes: 5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '26.8.1'
       - name: Verify and package candidate
+        env:
+          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
         run: |
-          pnpm verify
+          case "$VERIFICATION_PROFILE" in
+            full) pnpm verify ;;
+            visual) pnpm verify:visual ;;
+            *) echo 'Unsupported verification profile'; exit 1 ;;
+          esac
           node scripts/build-delivery-artifact.mjs
       - id: bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -86,6 +97,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BROKER_URL: ${{ inputs.broker_url }}
           ARTIFACT_FILE: ${{ inputs.artifact_file }}
+          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
         run: |
           node --input-type=module <<'JS'
           import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -111,7 +123,8 @@ jobs:
           const artifact = await readFile(`candidate/${env.ARTIFACT_FILE}`);
           if (artifact.length > 64 * 1024 * 1024) throw new Error('Bundle too large');
           const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-          const receipt = { schema: 1, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceLockSha256: hash(Buffer.from(lock.content, 'base64')), artifactSha256: hash(artifact), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
+          if (!['full','visual'].includes(env.VERIFICATION_PROFILE)) throw new Error('Unsupported verification profile');
+          const receipt = { schema: 1, verificationProfile: env.VERIFICATION_PROFILE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceLockSha256: hash(Buffer.from(lock.content, 'base64')), artifactSha256: hash(artifact), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
           await mkdir('accepted');
           await writeFile(`accepted/${env.ARTIFACT_FILE}`, artifact);
           await writeFile('accepted/release-provenance.json', JSON.stringify(receipt));
@@ -140,7 +153,7 @@ jobs:
           if (!response.ok) throw new Error('OIDC request failed');
           const { value: token } = await response.json();
           const receipt = JSON.parse(await readFile('accepted/release-provenance.json', 'utf8'));
-          const body = { installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 };
+          const body = { verificationProfile: receipt.verificationProfile, installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 };
           const result = await fetch(`${origin}/api/delivery/broker/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error' });
           if (!result.ok) throw new Error(`Broker prepare failed (${result.status}): ${await result.text()}`);
           console.log('Release prepared for owner review.');

@@ -15,5 +15,12 @@ and `artifact_file` (`lamp-worker-artifact.json` or
 `happytohelp-worker-artifact.json`). The repository must provide the maintained
 `pnpm verify` command and `scripts/build-delivery-artifact.mjs`.
 
+`verification_profile` defaults to `full`. The explicit `visual` profile runs
+`pnpm verify:visual` instead, for focused visual source validation, type checking,
+building, and browser verification. Both profiles use the same credential-free
+build and isolated OIDC attestation; the independently produced provenance records
+which profile ran. A visual result never claims full verification. The broker
+and owner acceptance policy determine whether the source is eligible to publish.
+
 This repository contains no deployment credentials. Customer applications keep
 their source and runtime resources in their own accounts.
