@@ -92,7 +92,7 @@ jobs:
           artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: candidate
           merge-multiple: true
-      - name: Record independently observed source and artifact identity
+      - name: Convert candidate artifact to a bounded raw-payload package and record source identity
         env:
           GH_TOKEN: ${{ github.token }}
           BROKER_URL: ${{ inputs.broker_url }}
@@ -100,9 +100,13 @@ jobs:
           VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
         run: |
           node --input-type=module <<'JS'
-          import { readFile, writeFile, mkdir } from 'node:fs/promises';
+          import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
           import { createHash } from 'node:crypto';
           const env = process.env;
+          const MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024;
+          const MAX_ARTIFACT_ENTRY_BYTES = 24 * 1024 * 1024;
+          const MAX_ARTIFACT_PAYLOAD_BYTES = 96 * 1024 * 1024;
+          const MAX_ARTIFACT_ENTRIES = 2048;
           const broker = new URL(env.BROKER_URL);
           if (broker.protocol !== 'https:' || broker.username || broker.password || broker.pathname !== '/' || broker.search || broker.hash) throw new Error('Broker must be an HTTPS origin');
           const api = async path => {
@@ -120,22 +124,95 @@ jobs:
           const lock = await api(`/repos/${env.GITHUB_REPOSITORY}/contents/sources.lock.json?ref=${env.GITHUB_SHA}`);
           if (commit.sha !== env.GITHUB_SHA || lock.encoding !== 'base64' || typeof lock.content !== 'string') throw new Error('Invalid immutable source response');
           if (!['lamp-worker-artifact.json','happytohelp-worker-artifact.json'].includes(env.ARTIFACT_FILE)) throw new Error('Unsupported edition artifact');
-          const artifact = await readFile(`candidate/${env.ARTIFACT_FILE}`);
-          if (artifact.length > 64 * 1024 * 1024) throw new Error('Bundle too large');
           const hash = bytes => createHash('sha256').update(bytes).digest('hex');
           if (!['full','visual'].includes(env.VERIFICATION_PROFILE)) throw new Error('Unsupported verification profile');
-          const receipt = { schema: 1, verificationProfile: env.VERIFICATION_PROFILE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceLockSha256: hash(Buffer.from(lock.content, 'base64')), artifactSha256: hash(artifact), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
-          await mkdir('accepted');
-          await writeFile(`accepted/${env.ARTIFACT_FILE}`, artifact);
-          await writeFile('accepted/release-provenance.json', JSON.stringify(receipt));
+          const safeRelativePath = value => Boolean(value) && !value.startsWith('/') && !value.includes('\\') && !value.split('/').some(part => !part || part === '.' || part === '..');
+          const safeModuleName = value => safeRelativePath(value) && !value.startsWith('payload/') && !/[\x00-\x1f\x7f"\\]/.test(value);
+          const safeAssetPath = value => value.startsWith('/') && !value.includes('\\') && !value.slice(1).split('/').some(part => !part || part === '.' || part === '..');
+          const privateArtifactEntry = value => /^(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|\.npmrc|\.yarnrc(?:\.yml)?|\.netrc|\.pypirc)$/i.test(value.split('/').at(-1));
+          const moduleTypes = new Set(['esm', 'commonjs', 'text', 'buffer', 'compiled-wasm']);
+          const rejectUnknown = (value, fields, label) => { for (const key of Object.keys(value)) if (!fields.includes(key)) throw new Error(`Unexpected ${label} field`); };
+          const decode = value => {
+            if (typeof value !== 'string' || value.length % 4 === 1) throw new Error('Invalid legacy artifact payload encoding');
+            const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+            const contentLength = value.length - padding;
+            for (let index = 0; index < contentLength; index += 1) {
+              const code = value.charCodeAt(index);
+              if (!((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || (code >= 0x30 && code <= 0x39) || code === 0x2b || code === 0x2f)) throw new Error('Invalid legacy artifact payload encoding');
+            }
+            if (padding && value.slice(contentLength) !== '='.repeat(padding)) throw new Error('Invalid legacy artifact payload encoding');
+            const bytes = Buffer.from(value, 'base64');
+            if (bytes.toString('base64') !== value) throw new Error('Non-canonical legacy artifact payload encoding');
+            return bytes;
+          };
+          const sourceArtifact = JSON.parse((await readFile(`candidate/${env.ARTIFACT_FILE}`)).toString('utf8'));
+          if (!sourceArtifact || typeof sourceArtifact !== 'object' || Array.isArray(sourceArtifact)) throw new Error('Invalid legacy artifact');
+          rejectUnknown(sourceArtifact, ['schema', 'deploymentSpec', 'mainModule', 'modules', 'assets'], 'legacy artifact');
+          if (sourceArtifact.schema !== 1 || typeof sourceArtifact.mainModule !== 'string' || !safeModuleName(sourceArtifact.mainModule) || !Array.isArray(sourceArtifact.modules) || !sourceArtifact.modules.length || !Array.isArray(sourceArtifact.assets)) throw new Error('Invalid legacy artifact structure');
+          if (sourceArtifact.deploymentSpec !== undefined && (!sourceArtifact.deploymentSpec || typeof sourceArtifact.deploymentSpec !== 'object' || Array.isArray(sourceArtifact.deploymentSpec))) throw new Error('Invalid legacy deployment specification');
+          if (sourceArtifact.modules.length + sourceArtifact.assets.length > MAX_ARTIFACT_ENTRIES) throw new Error('Artifact package has too many entries');
+          const moduleNames = new Set(), assetPaths = new Set(), payloadBytes = { total: 0 };
+          const manifest = { schema: 2, ...(sourceArtifact.deploymentSpec === undefined ? {} : { deploymentSpec: sourceArtifact.deploymentSpec }), mainModule: sourceArtifact.mainModule, modules: [], assets: [] };
+          await rm('accepted', { recursive: true, force: true });
+          await mkdir('accepted/payload/modules', { recursive: true });
+          await mkdir('accepted/payload/assets', { recursive: true });
+          const writePayload = async (bytes, payload) => {
+            if (bytes.byteLength > MAX_ARTIFACT_ENTRY_BYTES) throw new Error('Artifact package entry exceeds size limit');
+            payloadBytes.total += bytes.byteLength;
+            if (payloadBytes.total > MAX_ARTIFACT_PAYLOAD_BYTES) throw new Error('Artifact package payload exceeds size limit');
+            await writeFile(`accepted/${payload}`, bytes, { flag: 'wx' });
+            return { size: bytes.byteLength, sha256: hash(bytes) };
+          };
+          for (let index = 0; index < sourceArtifact.modules.length; index += 1) {
+            const source = sourceArtifact.modules[index];
+            if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('Invalid legacy module descriptor');
+            rejectUnknown(source, ['name', 'type', 'contentBase64'], 'legacy module');
+            if (typeof source.name !== 'string' || !safeModuleName(source.name) || privateArtifactEntry(source.name) || moduleNames.has(source.name) || typeof source.type !== 'string' || !moduleTypes.has(source.type)) throw new Error('Invalid legacy module descriptor');
+            moduleNames.add(source.name);
+            const payload = `payload/modules/${String(index).padStart(6, '0')}`;
+            const identity = await writePayload(decode(source.contentBase64), payload);
+            manifest.modules.push({ role: 'module', name: source.name, type: source.type, payload, ...identity });
+          }
+          if (!moduleNames.has(sourceArtifact.mainModule)) throw new Error('Artifact entry module is not declared');
+          for (let index = 0; index < sourceArtifact.assets.length; index += 1) {
+            const source = sourceArtifact.assets[index];
+            if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('Invalid legacy asset descriptor');
+            rejectUnknown(source, ['path', 'contentBase64', 'contentType'], 'legacy asset');
+            if (typeof source.path !== 'string' || !safeAssetPath(source.path) || privateArtifactEntry(source.path) || assetPaths.has(source.path) || typeof source.contentType !== 'string' || !/^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/.test(source.contentType)) throw new Error('Invalid legacy asset descriptor');
+            assetPaths.add(source.path);
+            const payload = `payload/assets/${String(index).padStart(6, '0')}`;
+            const identity = await writePayload(decode(source.contentBase64), payload);
+            manifest.assets.push({ role: 'asset', path: source.path, contentType: source.contentType, payload, ...identity });
+          }
+          const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+          if (manifestBytes.byteLength > MAX_ARTIFACT_MANIFEST_BYTES) throw new Error('Artifact manifest exceeds size limit');
+          await writeFile(`accepted/${env.ARTIFACT_FILE}`, manifestBytes, { flag: 'wx' });
+          const receipt = { schema: 2, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceLockSha256: hash(Buffer.from(lock.content, 'base64')), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
+          await writeFile('accepted/release-provenance.json', `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
+          console.log(JSON.stringify({ schema: 2, artifactFile: env.ARTIFACT_FILE, modules: manifest.modules.length, assets: manifest.assets.length, payloadBytes: payloadBytes.total, manifestBytes: manifestBytes.byteLength }));
           JS
       - id: accepted
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trusted-${{ github.run_id }}-${{ github.run_attempt }}
-          path: accepted/*
+          path: accepted
           if-no-files-found: error
           retention-days: 30
+      - name: Validate final trusted archive size
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.accepted.outputs.artifact-id }}
+        run: |
+          node --input-type=module <<'JS'
+          const env = process.env;
+          if (!/^\d+$/.test(env.ARTIFACT_ID)) throw new Error('Trusted artifact id is missing');
+          const response = await fetch(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}/actions/artifacts/${env.ARTIFACT_ID}`, { headers: { Authorization: `Bearer ${env.GH_TOKEN}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' } });
+          if (!response.ok) throw new Error(`GitHub artifact metadata ${response.status}`);
+          const metadata = await response.json();
+          if (!Number.isSafeInteger(metadata.size_in_bytes) || metadata.size_in_bytes < 0) throw new Error('GitHub artifact size is unavailable');
+          if (metadata.size_in_bytes > 64 * 1024 * 1024) throw new Error('Trusted artifact archive exceeds size limit');
+          console.log(`Trusted artifact archive size: ${metadata.size_in_bytes} bytes`);
+          JS
       - name: Prepare release through authenticated broker
         env:
           BROKER_URL: ${{ inputs.broker_url }}
