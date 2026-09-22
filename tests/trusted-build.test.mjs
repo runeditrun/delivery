@@ -25,7 +25,7 @@ async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = 
  await writeFile(join(dir, 'candidate/rer-worker-artifact.json'), JSON.stringify({ ...artifact, ...artifactOverrides }));
  if (manifestSymlink) { await rm(join(dir, 'candidate/rer-worker-artifact.json')); await symlink('../outside.json', join(dir, 'candidate/rer-worker-artifact.json')); await writeFile(join(dir, 'outside.json'), JSON.stringify(artifact)); }
  const remote = JSON.stringify({ ...project, ...overrides });
- const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(String(url).includes('sources.lock'))return new Response('',{status:404}); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
+ const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(String(url).includes('sources.lock'))throw Error('Project mode must not fetch unused source lock'); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
  const env = { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_REPOSITORY: 'org/app', GITHUB_SHA: 'b'.repeat(40), BUILD_PROFILE: 'project', ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', GITHUB_RUN_ID: '3', GITHUB_RUN_ATTEMPT: '1' };
  run(prelude + scripts[1], dir, { ...env, ...envOverrides });
  return { receipt: JSON.parse(await readFile(join(dir, 'accepted/release-provenance.json'), 'utf8')), remote };
@@ -62,4 +62,14 @@ test('attestation rejects traversal, secret entries, wrong broker origins and fi
 test('candidate manifest symlinks and missing generic deployment specifications are rejected', async t => {
  await assert.rejects(attest(t, {}, {}, {}, true));
  await assert.rejects(attest(t, {}, { deploymentSpec: undefined }));
+});
+
+test('registered default artifact filename works in build and independent attestation', async t => {
+ const descriptor = { ...project, deployment: { target: 'cloudflare-workers' } };
+ const dir = await temporary(t);
+ await writeFile(join(dir, 'rer-project.json'), JSON.stringify(descriptor));
+ run(scripts[0], dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
+ assert.equal(await readFile(join(dir, 'order'), 'utf8'), 'setup\nbuild\nverify\nartifact\n');
+ const { receipt } = await attest(t, { deployment: descriptor.deployment });
+ assert.equal(receipt.artifactFile, 'rer-worker-artifact.json');
 });

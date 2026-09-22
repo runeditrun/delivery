@@ -30,7 +30,8 @@ their source and runtime resources in their own accounts.
 Set `build_profile: project` and `artifact_file: rer-worker-artifact.json` (or the
 filename declared by the project). Commit `rer-project.json` with the registered
 schema-1 project descriptor. Its deployment target is `cloudflare-workers` and
-its `deployment.artifactFile` must equal the workflow input. Its `operations`
+its `deployment.artifactFile` (default `rer-worker-artifact.json`) must equal the
+workflow input. Its `operations`
 contains shell command strings: optional `setup`, required `build` and `verify`,
 and optional `artifact`, executed in that order with Bash failure propagation.
 The build or artifact command writes `delivery-artifact/<artifactFile>` in the
