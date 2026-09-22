@@ -24,3 +24,33 @@ and owner acceptance policy determine whether the source is eligible to publish.
 
 This repository contains no deployment credentials. Customer applications keep
 their source and runtime resources in their own accounts.
+
+## Framework-neutral projects
+
+Set `build_profile: project` and `artifact_file: rer-worker-artifact.json` (or the
+filename declared by the project). Commit `rer-project.json` with the registered
+schema-1 project descriptor. Its deployment target is `cloudflare-workers` and
+its `deployment.artifactFile` must equal the workflow input. Its `operations`
+contains shell command strings: optional `setup`, required `build` and `verify`,
+and optional `artifact`, executed in that order with Bash failure propagation.
+The build or artifact command writes `delivery-artifact/<artifactFile>` in the
+existing Cloudflare schema-1 module/asset format, including its explicit
+`deploymentSpec` for the registered Cloudflare adapter. Commands may install and use any
+language or framework toolchain available on the Ubuntu runner; the workflow does
+not install pnpm, browsers or edition verification tools in project mode. Node is
+used only for the trusted workflow harness. Project mode requires the `full`
+verification profile. Project commands run without deployment credentials or OIDC.
+
+The isolated attestation job retrieves the descriptor at the immutable source
+commit and verifies its target and artifact filename. It never runs project
+commands. Its receipt records `sourceProvenance: project-descriptor` and the
+exact descriptor SHA-256 in the legacy-named `sourceLockSha256` field; the commit
+and tree identities remain mandatory. Projects do not require `sources.lock.json`.
+Edition mode remains the default, with `sourceProvenance: source-lock` and the
+existing mandatory source lock. The broker must support the matching provenance
+kind before adopting this workflow revision. The Cloudflare adapter is explicit;
+this workflow does not claim deployment support for other providers.
+
+Run local workflow contract checks with `node --test tests/*.test.mjs`. These
+execute extracted workflow scripts with test-only GitHub/OIDC responses and real
+local artifacts; they do not establish hosted GitHub Actions or provider proof.
