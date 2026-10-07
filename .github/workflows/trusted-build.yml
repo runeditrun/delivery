@@ -107,7 +107,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: delivery-artifact/${{ inputs.artifact_file }}
+          path: |
+            delivery-artifact/${{ inputs.artifact_file }}
+            delivery-artifact/payload
           if-no-files-found: error
           retention-days: 7
   attest:
@@ -134,7 +136,8 @@ jobs:
           VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
         run: |
           node --input-type=module <<'JS'
-          import { readFile, writeFile, mkdir, rm, lstat } from 'node:fs/promises';
+          import { readFile, writeFile, mkdir, rm, lstat, open } from 'node:fs/promises';
+          import { constants } from 'node:fs';
           import { createHash } from 'node:crypto';
           const env = process.env;
           const MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024;
@@ -192,10 +195,12 @@ jobs:
           const candidatePath = `candidate/${env.ARTIFACT_FILE}`;
           const candidateStat = await lstat(candidatePath);
           if (!candidateStat.isFile() || candidateStat.isSymbolicLink()) throw new Error('Candidate manifest must be a regular file');
+          if (candidateStat.size > MAX_ARTIFACT_PAYLOAD_BYTES * 2) throw new Error('Candidate manifest exceeds size limit');
           const sourceArtifact = JSON.parse((await readFile(candidatePath)).toString('utf8'));
+          if (sourceArtifact?.schema === 2 && candidateStat.size > MAX_ARTIFACT_MANIFEST_BYTES) throw new Error('Artifact manifest exceeds size limit');
           if (!sourceArtifact || typeof sourceArtifact !== 'object' || Array.isArray(sourceArtifact)) throw new Error('Invalid legacy artifact');
           rejectUnknown(sourceArtifact, ['schema', 'deploymentSpec', 'mainModule', 'modules', 'assets'], 'legacy artifact');
-          if (sourceArtifact.schema !== 1 || typeof sourceArtifact.mainModule !== 'string' || !safeModuleName(sourceArtifact.mainModule) || !Array.isArray(sourceArtifact.modules) || !sourceArtifact.modules.length || !Array.isArray(sourceArtifact.assets)) throw new Error('Invalid legacy artifact structure');
+          if (![1,2].includes(sourceArtifact.schema) || typeof sourceArtifact.mainModule !== 'string' || !safeModuleName(sourceArtifact.mainModule) || !Array.isArray(sourceArtifact.modules) || !sourceArtifact.modules.length || !Array.isArray(sourceArtifact.assets)) throw new Error('Invalid legacy artifact structure');
           if (env.BUILD_PROFILE === 'project' && sourceArtifact.deploymentSpec === undefined) throw new Error('Project artifact requires explicit deployment specification');
           if (sourceArtifact.deploymentSpec !== undefined && (!sourceArtifact.deploymentSpec || typeof sourceArtifact.deploymentSpec !== 'object' || Array.isArray(sourceArtifact.deploymentSpec))) throw new Error('Invalid legacy deployment specification');
           if (sourceArtifact.modules.length + sourceArtifact.assets.length > MAX_ARTIFACT_ENTRIES) throw new Error('Artifact package has too many entries');
@@ -211,25 +216,46 @@ jobs:
             await writeFile(`accepted/${payload}`, bytes, { flag: 'wx' });
             return { size: bytes.byteLength, sha256: hash(bytes) };
           };
+          const readCandidatePayload = async (entry, expectedPath, role) => {
+            if (entry.role !== role || entry.payload !== expectedPath || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_ARTIFACT_ENTRY_BYTES || typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error('Invalid native payload identity');
+            for (const directory of ['candidate/payload', `candidate/payload/${role}s`]) {
+              const stat = await lstat(directory);
+              if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Native payload directory must be real');
+            }
+            const file = await open(`candidate/${entry.payload}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            try {
+              const stat = await file.stat();
+              if (!stat.isFile() || stat.size !== entry.size) throw new Error('Native payload size mismatch');
+              const bytes = Buffer.alloc(entry.size + 1);
+              let offset = 0;
+              while (offset < bytes.length) {
+                const {bytesRead} = await file.read(bytes, offset, bytes.length - offset, offset);
+                if (!bytesRead) break;
+                offset += bytesRead;
+              }
+              if (offset !== entry.size || hash(bytes.subarray(0,offset)) !== entry.sha256) throw new Error('Native payload digest mismatch');
+              return bytes.subarray(0,offset);
+            } finally { await file.close(); }
+          };
           for (let index = 0; index < sourceArtifact.modules.length; index += 1) {
             const source = sourceArtifact.modules[index];
             if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('Invalid legacy module descriptor');
-            rejectUnknown(source, ['name', 'type', 'contentBase64'], 'legacy module');
+            rejectUnknown(source, sourceArtifact.schema === 1 ? ['name', 'type', 'contentBase64'] : ['role','name','type','payload','size','sha256'], 'module');
             if (typeof source.name !== 'string' || !safeModuleName(source.name) || privateArtifactEntry(source.name) || moduleNames.has(source.name) || typeof source.type !== 'string' || !moduleTypes.has(source.type)) throw new Error('Invalid legacy module descriptor');
             moduleNames.add(source.name);
             const payload = `payload/modules/${String(index).padStart(6, '0')}`;
-            const identity = await writePayload(decode(source.contentBase64), payload);
+            const identity = await writePayload(sourceArtifact.schema === 1 ? decode(source.contentBase64) : await readCandidatePayload(source, payload, 'module'), payload);
             manifest.modules.push({ role: 'module', name: source.name, type: source.type, payload, ...identity });
           }
           if (!moduleNames.has(sourceArtifact.mainModule)) throw new Error('Artifact entry module is not declared');
           for (let index = 0; index < sourceArtifact.assets.length; index += 1) {
             const source = sourceArtifact.assets[index];
             if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('Invalid legacy asset descriptor');
-            rejectUnknown(source, ['path', 'contentBase64', 'contentType'], 'legacy asset');
+            rejectUnknown(source, sourceArtifact.schema === 1 ? ['path', 'contentBase64', 'contentType'] : ['role','path','contentType','payload','size','sha256'], 'asset');
             if (typeof source.path !== 'string' || !safeAssetPath(source.path) || privateArtifactEntry(source.path) || assetPaths.has(source.path) || typeof source.contentType !== 'string' || !/^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/.test(source.contentType)) throw new Error('Invalid legacy asset descriptor');
             assetPaths.add(source.path);
             const payload = `payload/assets/${String(index).padStart(6, '0')}`;
-            const identity = await writePayload(decode(source.contentBase64), payload);
+            const identity = await writePayload(sourceArtifact.schema === 1 ? decode(source.contentBase64) : await readCandidatePayload(source, payload, 'asset'), payload);
             manifest.assets.push({ role: 'asset', path: source.path, contentType: source.contentType, payload, ...identity });
           }
           const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
