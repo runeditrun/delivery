@@ -29,7 +29,7 @@ async function fixture(t) {
   const run = async () => {
     const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
     await writeFile(join(root,'candidate/app.json'),bytes);
-    execFileSync(process.execPath,['--input-type=module','-e',prelude+scripts[1]],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
+    execFileSync(process.execPath,['--input-type=module','-e',prelude+scripts[1]],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',NODE_VERSION:process.versions.node,NODE_VERSION_SOURCE:'default',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
     return bytes;
   };
   return {root,manifest,run,worker,asset};

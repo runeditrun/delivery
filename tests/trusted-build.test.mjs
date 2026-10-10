@@ -26,7 +26,7 @@ async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = 
  if (manifestSymlink) { await rm(join(dir, 'candidate/rer-worker-artifact.json')); await symlink('../outside.json', join(dir, 'candidate/rer-worker-artifact.json')); await writeFile(join(dir, 'outside.json'), JSON.stringify(artifact)); }
  const remote = JSON.stringify({ ...project, ...overrides });
  const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(String(url).includes('sources.lock'))throw Error('Project mode must not fetch unused source lock'); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
- const env = { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_REPOSITORY: 'org/app', GITHUB_SHA: 'b'.repeat(40), BUILD_PROFILE: 'project', ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', GITHUB_RUN_ID: '3', GITHUB_RUN_ATTEMPT: '1' };
+ const env = { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_REPOSITORY: 'org/app', GITHUB_SHA: 'b'.repeat(40), BUILD_PROFILE: 'project', ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', GITHUB_RUN_ID: '3', GITHUB_RUN_ATTEMPT: '1' };
  run(prelude + scripts[1], dir, { ...env, ...envOverrides });
  return { receipt: JSON.parse(await readFile(join(dir, 'accepted/release-provenance.json'), 'utf8')), remote };
 }
@@ -35,6 +35,18 @@ test('isolated attestation binds generic package to immutable descriptor and sou
  assert.equal(receipt.sourceProvenance, 'project-descriptor');
  assert.equal(receipt.sourceLockSha256, createHash('sha256').update(remote).digest('hex'));
  assert.equal(receipt.treeSha, 'c'.repeat(40)); assert.equal(receipt.artifactFile, 'rer-worker-artifact.json');
+});
+test('isolated provenance records the build runtime rather than its own Node and rejects invalid runtime outputs', async t => {
+ for (const [version, source] of [['20.19.5', '.nvmrc'], ['24.8.0', 'package.json:volta.node'], [process.versions.node, 'default']]) {
+  const { receipt } = await attest(t, {}, {}, { NODE_VERSION: version, NODE_VERSION_SOURCE: source });
+  assert.equal(receipt.nodeVersion, version);
+  assert.equal(receipt.nodeVersionSource, source);
+ }
+ for (const runtime of [{ NODE_VERSION: '>=20' }, { NODE_VERSION: 'v20.19.5' }, { NODE_VERSION: '' }, { NODE_VERSION_SOURCE: 'untrusted' }]) {
+  await assert.rejects(attest(t, {}, {}, runtime), error => /Invalid build Node runtime/.test(error.stderr.toString()));
+ }
+ assert.match(workflow, /NODE_VERSION: \$\{\{ needs\.build\.outputs\.node_version \}\}/);
+ assert.match(workflow, /NODE_VERSION_SOURCE: \$\{\{ needs\.build\.outputs\.node_version_source \}\}/);
 });
 test('immutable descriptor mismatch prevents generic attestation', async t => {
  await assert.rejects(attest(t, { deployment: { target: 'other', artifactFile: 'rer-worker-artifact.json' } }));

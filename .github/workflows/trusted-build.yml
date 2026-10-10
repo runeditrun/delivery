@@ -35,14 +35,59 @@ jobs:
       contents: read
     outputs:
       artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+      node_version: ${{ steps.runtime.outputs.version }}
+      node_version_source: ${{ steps.node-pin.outputs.source }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the first exact project Node pin
+        id: node-pin
+        env:
+          DEFAULT_NODE_VERSION: '26.8.1'
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          def exact(value):
+              if not isinstance(value, str):
+                  return None
+              match = re.fullmatch(r"v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))", value.strip())
+              return match[1] if match else None
+
+          def select():
+              for name in (".node-version", ".nvmrc"):
+                  path = Path(name)
+                  version = exact(path.read_text()) if path.exists() else None
+                  if version:
+                      return version, name
+              manifest = Path("package.json")
+              package = json.loads(manifest.read_text()) if manifest.exists() else {}
+              for field in ("engines", "volta"):
+                  data = package.get(field)
+                  version = exact(data.get("node")) if isinstance(data, dict) else None
+                  if version:
+                      return version, f"package.json:{field}.node"
+              bootstrap = Path("scripts/agent-bootstrap.sh")
+              if bootstrap.exists():
+                  match = re.search(r"^\s*(?:readonly\s+)?NODE_VERSION=(?:['\"]([0-9.]+)['\"]|([0-9.]+))\s*(?:#.*)?$", bootstrap.read_text(), re.M)
+                  version = exact(match[1] or match[2]) if match else None
+                  if version:
+                      return version, "scripts/agent-bootstrap.sh:NODE_VERSION"
+              return os.environ["DEFAULT_NODE_VERSION"], "default"
+
+          version, source = select()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\nsource={source}\n")
+          print(f"Selected Node {version} from {source}")
+          PY
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '26.8.1'
+          node-version: ${{ steps.node-pin.outputs.version }}
       - name: Install candidate dependencies without deployment credentials or OIDC
         if: inputs.build_profile == 'edition'
         env:
@@ -71,7 +116,15 @@ jobs:
         timeout-minutes: 5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '26.8.1'
+          node-version: ${{ steps.node-pin.outputs.version }}
+      - name: Record the build runtime before candidate commands
+        id: runtime
+        env:
+          NODE_VERSION: ${{ steps.node-pin.outputs.version }}
+        run: |
+          actual="$(node --version)"
+          test "$actual" = "v$NODE_VERSION"
+          printf 'version=%s\n' "${actual#v}" >> "$GITHUB_OUTPUT"
       - name: Verify and package candidate
         if: inputs.build_profile == 'edition'
         env:
@@ -134,12 +187,15 @@ jobs:
           BROKER_URL: ${{ inputs.broker_url }}
           ARTIFACT_FILE: ${{ inputs.artifact_file }}
           VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+          NODE_VERSION: ${{ needs.build.outputs.node_version }}
+          NODE_VERSION_SOURCE: ${{ needs.build.outputs.node_version_source }}
         run: |
           node --input-type=module <<'JS'
           import { readFile, writeFile, mkdir, rm, lstat, open } from 'node:fs/promises';
           import { constants } from 'node:fs';
           import { createHash } from 'node:crypto';
           const env = process.env;
+          if (!/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(env.NODE_VERSION ?? '') || !['.node-version', '.nvmrc', 'package.json:engines.node', 'package.json:volta.node', 'scripts/agent-bootstrap.sh:NODE_VERSION', 'default'].includes(env.NODE_VERSION_SOURCE)) throw new Error('Invalid build Node runtime');
           const MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024;
           const MAX_ARTIFACT_ENTRY_BYTES = 24 * 1024 * 1024;
           const MAX_ARTIFACT_PAYLOAD_BYTES = 96 * 1024 * 1024;
@@ -261,7 +317,7 @@ jobs:
           const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
           if (manifestBytes.byteLength > MAX_ARTIFACT_MANIFEST_BYTES) throw new Error('Artifact manifest exceeds size limit');
           await writeFile(`accepted/${env.ARTIFACT_FILE}`, manifestBytes, { flag: 'wx' });
-          const receipt = { schema: 2, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
+          const receipt = { schema: 2, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, nodeVersion: env.NODE_VERSION, nodeVersionSource: env.NODE_VERSION_SOURCE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
           await writeFile('accepted/release-provenance.json', `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
           console.log(JSON.stringify({ schema: 2, artifactFile: env.ARTIFACT_FILE, modules: manifest.modules.length, assets: manifest.assets.length, payloadBytes: payloadBytes.total, manifestBytes: manifestBytes.byteLength }));
           JS

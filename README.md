@@ -25,6 +25,17 @@ and owner acceptance policy determine whether the source is eligible to publish.
 This repository contains no deployment credentials. Customer applications keep
 their source and runtime resources in their own accounts.
 
+Both build profiles use the first exact Node release declared by `.node-version`,
+`.nvmrc`, `package.json`'s `engines.node`, then `volta.node`, then a literal
+`NODE_VERSION` in `scripts/agent-bootstrap.sh`. File and manifest pins may have a
+leading `v`. Ranges, partial versions and aliases are skipped; with no exact pin,
+the build uses Node 26.8.1. Bootstrap scripts are read, never executed for selection.
+The existing edition browser-install workaround temporarily uses Node 22; the
+selected release is restored before verification and packaging. Independent
+`release-provenance.json` records that build runtime as `nodeVersion` and its pin
+source as `nodeVersionSource`, using trusted build-step outputs rather than
+candidate artifact fields. The attestation job keeps its separate runtime.
+
 ## Framework-neutral projects
 
 Set `build_profile: project` and `artifact_file: rer-worker-artifact.json` (or the
@@ -38,8 +49,8 @@ The build or artifact command writes `delivery-artifact/<artifactFile>` in the
 existing Cloudflare schema-1 module/asset format, including its explicit
 `deploymentSpec` for the registered Cloudflare adapter. Commands may install and use any
 language or framework toolchain available on the Ubuntu runner; the workflow does
-not install pnpm, browsers or edition verification tools in project mode. Node is
-used only for the trusted workflow harness. Project mode requires the `full`
+not install pnpm, browsers or edition verification tools in project mode. The
+selected Node is available to the harness and project commands. Project mode requires the `full`
 verification profile. Project commands run without deployment credentials or OIDC.
 
 The isolated attestation job retrieves the descriptor at the immutable source
