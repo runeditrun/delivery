@@ -156,13 +156,99 @@ jobs:
             execFileSync('/bin/bash', ['-e', '-o', 'pipefail', '-c', command], { stdio: 'inherit' });
           }
           JS
+      - name: Validate and stage producer package
+        id: stage
+        env:
+          ARTIFACT_FILE: ${{ inputs.artifact_file }}
+        run: |
+          node --input-type=module <<'JS'
+          import { lstat, readdir, open, mkdir, mkdtemp, rm, appendFile, realpath } from 'node:fs/promises';
+          import { constants } from 'node:fs';
+          import { resolve, join, relative, isAbsolute, sep } from 'node:path';
+          const env = process.env;
+          const root = 'delivery-artifact';
+          const remedy = 'copy the file into delivery-artifact/payload instead of linking it; use real directories and regular files with a single link';
+          const reject = (path, type) => { throw new Error(`${JSON.stringify(path)}: ${type}; ${remedy}`); };
+          const kind = stat => stat.isSymbolicLink() ? 'symbolic link' : stat.isFIFO() ? 'named pipe' : stat.isSocket() ? 'socket' : stat.isCharacterDevice() ? 'character device' : stat.isBlockDevice() ? 'block device' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'regular file' : 'non-regular entry';
+          const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+          const files = [], directories = [];
+          let stage, current = root;
+          const inspect = async (path, expected) => {
+            current = path;
+            const stat = await lstat(path);
+            if (stat.isSymbolicLink()) reject(path, 'symbolic link');
+            else if (!stat.isFile() && !stat.isDirectory()) reject(path, kind(stat));
+            if (stat.isFile() && stat.nlink !== 1) reject(path, 'hard-linked regular file');
+            if (expected === 'directory' && !stat.isDirectory()) reject(path, `${kind(stat)} where a directory is required`);
+            if (expected === 'file' && !stat.isFile()) reject(path, `${kind(stat)} where a regular file is required`);
+            return stat;
+          };
+          const walk = async (path, expected) => {
+            const stat = await inspect(path, expected);
+            if (stat.isDirectory()) {
+              directories.push({ path, stat });
+              for (const name of await readdir(path)) await walk(join(path, name));
+            } else files.push({ path, stat });
+          };
+          const checkDirectories = async () => {
+            for (const entry of directories) {
+              const stat = await inspect(entry.path, 'directory');
+              if (!same(stat, entry.stat)) reject(entry.path, 'directory changed during staging');
+            }
+          };
+          try {
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.json$/.test(env.ARTIFACT_FILE) || env.ARTIFACT_FILE === 'release-provenance.json') reject(env.ARTIFACT_FILE ?? '', 'invalid artifact filename; use a simple .json filename other than release-provenance.json');
+            // Inventory the entire upload surface before opening any producer content.
+            directories.push({ path: root, stat: await inspect(root, 'directory') });
+            await walk(join(root, env.ARTIFACT_FILE), 'file');
+            const payload = join(root, 'payload');
+            current = payload;
+            let payloadStat;
+            try { payloadStat = await lstat(payload); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+            if (payloadStat) await walk(payload, 'directory');
+            current = env.RUNNER_TEMP ?? '';
+            if (!env.RUNNER_TEMP || !isAbsolute(env.RUNNER_TEMP)) reject(current, 'RUNNER_TEMP must be an absolute directory outside the workspace');
+            const runnerTemp = await realpath(env.RUNNER_TEMP);
+            const within = relative(resolve('.'), runnerTemp);
+            if (!within || (!within.startsWith(`..${sep}`) && within !== '..' && !isAbsolute(within))) reject(current, 'RUNNER_TEMP is inside the workspace');
+            stage = await mkdtemp(join(runnerTemp, 'delivery-stage-'));
+            for (const entry of directories.slice(1)) await mkdir(join(stage, relative(root, entry.path)), { recursive: true });
+            for (const entry of files) {
+              // Recheck parents on both sides of open and compare the opened inode.
+              // This is a checked snapshot, not a sandbox for hostile same-UID processes.
+              await checkDirectories();
+              current = entry.path;
+              const source = await open(entry.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+              try {
+                const stat = await source.stat();
+                if (!stat.isFile()) reject(entry.path, kind(stat));
+                if (stat.nlink !== 1) reject(entry.path, 'hard-linked regular file');
+                if (!same(stat, entry.stat)) reject(entry.path, 'file changed during staging');
+                await checkDirectories();
+                current = entry.path;
+                const bytes = await source.readFile();
+                const after = await source.stat();
+                if (after.nlink !== 1) reject(entry.path, 'hard-linked regular file');
+                if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) reject(entry.path, 'file changed during staging');
+                const target = await open(join(stage, relative(root, entry.path)), 'wx', 0o600);
+                try { await target.writeFile(bytes); } finally { await target.close(); }
+              } finally { await source.close(); }
+            }
+            await checkDirectories();
+            current = env.GITHUB_OUTPUT ?? '';
+            await appendFile(env.GITHUB_OUTPUT, `directory=${stage}\n`);
+            console.log('Producer package validated and staged.');
+          } catch (error) {
+            if (stage) await rm(stage, { recursive: true, force: true });
+            console.error(error.code ? `${JSON.stringify(current)}: filesystem error ${error.code}; ${remedy}` : error.message);
+            process.exitCode = 1;
+          }
+          JS
       - id: bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            delivery-artifact/${{ inputs.artifact_file }}
-            delivery-artifact/payload
+          path: ${{ steps.stage.outputs.directory }}
           if-no-files-found: error
           retention-days: 7
   attest:

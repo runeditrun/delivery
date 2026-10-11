@@ -9,6 +9,12 @@ A separate job records source and artifact identity and authenticates to the
 customer installation broker with GitHub OIDC. The broker prepares the release
 for the configured owner acceptance policy.
 
+Producer manifests and payload files must be real regular files with a single
+link, inside real directories. Symbolic links, hard-linked files and special
+files fail the build before upload. The failure names the path and entry type
+and says “copy the file into delivery-artifact/payload instead of linking it”.
+The workflow uploads a fresh checked snapshot staged outside the workspace.
+
 The caller supplies `installation_id`, the HTTPS `broker_url`, the accepted
 `environment`, `pnpm_version` (8.15.6 for Lamp or 10.12.4 for HappyToHelp),
 and `artifact_file` (`lamp-worker-artifact.json` or

@@ -6,8 +6,8 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 
-const workflow = await readFile(new URL('../.github/workflows/trusted-build.yml',import.meta.url),'utf8');
-const scripts = [...workflow.matchAll(/          node --input-type=module <<'JS'\n([\s\S]*?)\n          JS/g)].map(m=>m[1].replace(/^          /gm,''));
+import { workflow, workflowScript } from './workflow-script.mjs';
+const attestScript = workflowScript('Convert candidate artifact to a bounded raw-payload package and record source identity');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const descriptor = {schema:1,deployment:{target:'cloudflare-workers',artifactFile:'app.json'}};
 const prelude = `globalThis.fetch = async url => {
@@ -29,7 +29,7 @@ async function fixture(t) {
   const run = async () => {
     const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
     await writeFile(join(root,'candidate/app.json'),bytes);
-    execFileSync(process.execPath,['--input-type=module','-e',prelude+scripts[1]],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',NODE_VERSION:process.versions.node,NODE_VERSION_SOURCE:'default',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
+    execFileSync(process.execPath,['--input-type=module','-e',prelude+attestScript],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',NODE_VERSION:process.versions.node,NODE_VERSION_SOURCE:'default',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
     return bytes;
   };
   return {root,manifest,run,worker,asset};
@@ -43,7 +43,7 @@ test('native schema-2 attestation preserves exact manifest and all binary payloa
   assert.equal(receipt.artifactSha256,hash(bytes));
   assert.equal(receipt.artifactSchema,2);
   assert.equal(receipt.sourceProvenance,'project-descriptor');
-  assert.match(workflow,/delivery-artifact\/payload/);
+  assert.match(workflow, /path: \$\{\{ steps\.stage\.outputs\.directory \}\}/);
 });
 test('native payload identities cannot redirect reads or substitute bytes',async t=>{
   for(const patch of [{payload:'../outside'},{payload:'payload/assets/000000'},{payload:'/etc/passwd'},{role:'asset'},{size:-1},{size:24*1024*1024+1},{size:0},{sha256:'0'.repeat(64)},{contentBase64:'YQ=='},{sha256:'A'.repeat(64)}]) {

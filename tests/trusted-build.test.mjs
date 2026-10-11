@@ -5,18 +5,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-const workflow = await readFile(new URL('../.github/workflows/trusted-build.yml', import.meta.url), 'utf8');
-const scripts = [...workflow.matchAll(/          node --input-type=module <<'JS'\n([\s\S]*?)\n          JS/g)].map(m => m[1].replace(/^          /gm, ''));
+import { workflow, workflowScript } from './workflow-script.mjs';
+const attestScript = workflowScript('Convert candidate artifact to a bounded raw-payload package and record source identity');
+const projectScript = workflowScript('Run project-owned setup, build, verification and artifact commands');
 const project = { schema: 1, deployment: { target: 'cloudflare-workers', artifactFile: 'rer-worker-artifact.json' }, operations: { setup: 'echo setup >> order', build: 'echo build >> order', verify: 'echo verify >> order', artifact: 'echo artifact >> order' } };
 const temporary = async t => { const dir = await mkdtemp(join(tmpdir(), 'rer-delivery-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 const run = (source, cwd, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', source], { cwd, env: { ...process.env, ...env }, stdio: 'pipe' });
 test('project-owned commands run without pnpm or edition files and propagate failure', async t => {
  const dir = await temporary(t);
  await writeFile(join(dir, 'rer-project.json'), JSON.stringify(project));
- run(scripts[0], dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
+ run(projectScript, dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
  assert.equal(await readFile(join(dir, 'order'), 'utf8'), 'setup\nbuild\nverify\nartifact\n');
  await writeFile(join(dir, 'rer-project.json'), JSON.stringify({ ...project, operations: { build: 'exit 7', verify: 'touch should-not-run' } }));
- assert.throws(() => run(scripts[0], dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' }));
+ assert.throws(() => run(projectScript, dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' }));
  await assert.rejects(readFile(join(dir, 'should-not-run')));
 });
 async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = {}, manifestSymlink = false) {
@@ -27,7 +28,7 @@ async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = 
  const remote = JSON.stringify({ ...project, ...overrides });
  const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(String(url).includes('sources.lock'))throw Error('Project mode must not fetch unused source lock'); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
  const env = { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_REPOSITORY: 'org/app', GITHUB_SHA: 'b'.repeat(40), BUILD_PROFILE: 'project', ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', GITHUB_RUN_ID: '3', GITHUB_RUN_ATTEMPT: '1' };
- run(prelude + scripts[1], dir, { ...env, ...envOverrides });
+ run(prelude + attestScript, dir, { ...env, ...envOverrides });
  return { receipt: JSON.parse(await readFile(join(dir, 'accepted/release-provenance.json'), 'utf8')), remote };
 }
 test('isolated attestation binds generic package to immutable descriptor and source tree without source lock', async t => {
@@ -80,7 +81,7 @@ test('registered default artifact filename works in build and independent attest
  const descriptor = { ...project, deployment: { target: 'cloudflare-workers' } };
  const dir = await temporary(t);
  await writeFile(join(dir, 'rer-project.json'), JSON.stringify(descriptor));
- run(scripts[0], dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
+ run(projectScript, dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
  assert.equal(await readFile(join(dir, 'order'), 'utf8'), 'setup\nbuild\nverify\nartifact\n');
  const { receipt } = await attest(t, { deployment: descriptor.deployment });
  assert.equal(receipt.artifactFile, 'rer-worker-artifact.json');
