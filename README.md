@@ -85,3 +85,5 @@ this workflow does not claim deployment support for other providers.
 Run local workflow contract checks with `node --test tests/*.test.mjs`. These
 execute extracted workflow scripts with test-only GitHub/OIDC responses and real
 local artifacts; they do not establish hosted GitHub Actions or provider proof.
+The same checks run in Actions once per push to `main`; branches use local or
+remote verification before landing.
