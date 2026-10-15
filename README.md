@@ -53,10 +53,23 @@ contains shell command strings: optional `setup`, required `build` and `verify`,
 and optional `artifact`, executed in that order with Bash failure propagation.
 The build or artifact command writes `delivery-artifact/<artifactFile>` in the
 existing Cloudflare schema-1 module/asset format, including its explicit
-`deploymentSpec` for the registered Cloudflare adapter. Commands may install and use any
-language or framework toolchain available on the Ubuntu runner; the workflow does
-not install pnpm, browsers or edition verification tools in project mode. The
-selected Node is available to the harness and project commands. Project mode requires the `full`
+`deploymentSpec` for the registered Cloudflare adapter. Before `operations.setup`,
+the workflow installs the exact `package.json` `packageManager` release (npm, pnpm,
+or yarn, as published on npm). If that field is absent, it uses the top-level
+`rer-project.json` `packageManager` declaration. Ranges, tags and partial versions
+fail; no floating version is installed. Corepack-style integrity suffixes are
+accepted; installation uses the exact release through `npm install --global`
+and checks the installed version. Projects with neither declaration receive no
+package manager provisioning. The edition-only `pnpm_version` input does not
+override a project's declaration. The selected Node is available for provisioning
+and every project command.
+
+Project mode also reclaims unused hosted Ubuntu runner SDKs before setup, limited
+to `/usr/local/lib/android`, `/usr/share/dotnet` and `/usr/local/.ghcup` (Android,
+.NET and Haskell), matching the launch seeds' CI. It logs root filesystem free
+space before and after cleanup and fails before setup if less than 15 GiB is
+available. Other toolchains, browsers and verification tools are provided by the
+project's own commands. Project mode requires the `full`
 verification profile. Project commands run without deployment credentials or OIDC.
 
 The isolated attestation job retrieves the descriptor at the immutable source

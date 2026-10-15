@@ -42,6 +42,20 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Prepare project runner disk
+        if: inputs.build_profile == 'project'
+        run: |
+          set -euo pipefail
+          df -Pk /
+          # Bounded to unused Android, .NET and Haskell SDKs on the hosted Ubuntu image.
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -Pk /
+          available_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+          printf 'Project runner free space: %s KiB (minimum 15 GiB)\n' "$available_kib"
+          if ! [ "$available_kib" -ge "$((15 * 1024 * 1024))" ]; then
+            echo '::error::Project builds require at least 15 GiB free before setup.'
+            exit 1
+          fi
       - name: Select the first exact project Node pin
         id: node-pin
         env:
@@ -149,6 +163,24 @@ jobs:
           if (project.schema !== 1 || project.deployment?.target !== 'cloudflare-workers' || (project.deployment.artifactFile ?? 'rer-worker-artifact.json') !== process.env.ARTIFACT_FILE) throw new Error('Project deployment descriptor mismatch');
           if (process.env.VERIFICATION_PROFILE !== 'full') throw new Error('Project build requires full verification');
           for (const name of ['build', 'verify']) if (typeof project.operations?.[name] !== 'string' || !project.operations[name].trim()) throw new Error(`Missing project ${name} command`);
+          let packageManager = project.packageManager, managerSource = 'rer-project.json:packageManager';
+          try {
+            const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
+            if (packageJson.packageManager !== undefined) {
+              packageManager = packageJson.packageManager;
+              managerSource = 'package.json:packageManager';
+            }
+          } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          if (packageManager !== undefined) {
+            const pin = typeof packageManager === 'string' && /^(npm|pnpm|yarn)@((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?:\+sha(?:224|256|384|512)\.[0-9a-f]+)?$/.exec(packageManager);
+            if (!pin) throw new Error('Project packageManager must pin an exact npm, pnpm or yarn release');
+            const [, manager, version] = pin;
+            console.log(`Installing ${manager}@${version} from ${managerSource}`);
+            execFileSync('npm', ['install', '--global', '--no-audit', '--no-fund', `${manager}@${version}`], { stdio: 'inherit' });
+            const actual = execFileSync(manager, ['--version'], { encoding: 'utf8' }).trim();
+            if (actual !== version) throw new Error(`Project package manager version mismatch: expected ${version}, got ${actual}`);
+            console.log(`Project package manager: ${manager}@${actual}`);
+          }
           for (const name of ['setup', 'build', 'verify', 'artifact']) {
             const command = project.operations[name];
             if (command === undefined && ['setup', 'artifact'].includes(name)) continue;

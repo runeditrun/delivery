@@ -11,13 +11,48 @@ const projectScript = workflowScript('Run project-owned setup, build, verificati
 const project = { schema: 1, deployment: { target: 'cloudflare-workers', artifactFile: 'rer-worker-artifact.json' }, operations: { setup: 'echo setup >> order', build: 'echo build >> order', verify: 'echo verify >> order', artifact: 'echo artifact >> order' } };
 const temporary = async t => { const dir = await mkdtemp(join(tmpdir(), 'rer-delivery-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 const run = (source, cwd, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', source], { cwd, env: { ...process.env, ...env }, stdio: 'pipe' });
-test('project-owned commands run without pnpm or edition files and propagate failure', async t => {
+test('project-owned commands receive declared pnpm, work undeclared and propagate failure', async t => {
  const dir = await temporary(t);
+ const bin = join(dir, 'bin');
+ await mkdir(bin);
+ // Fake only the global npm installation edge; the workflow selects and invokes the installed CLI.
+ await writeFile(join(bin, 'npm'), `#!${process.execPath}
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const args = process.argv.slice(2);
+ fs.appendFileSync('installs', JSON.stringify(args) + '\\n');
+ const [manager, requested] = args.at(-1).split('@');
+ const version = process.env.INSTALLED_VERSION ?? requested;
+ fs.writeFileSync(path.join(${JSON.stringify(bin)}, manager), "#!/bin/sh\\nprintf '%s\\\\n' '" + version + "'\\n", { mode: 0o755 });
+ `, { mode: 0o755 });
+ const env = { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', PATH: `${bin}:${process.env.PATH}` };
  await writeFile(join(dir, 'rer-project.json'), JSON.stringify(project));
- run(projectScript, dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' });
+ run(projectScript, dir, env);
  assert.equal(await readFile(join(dir, 'order'), 'utf8'), 'setup\nbuild\nverify\nartifact\n');
+ await assert.rejects(readFile(join(dir, 'installs')));
+ const managed = { ...project, packageManager: 'pnpm@9.15.4', operations: { ...project.operations, setup: 'pnpm --version >> order' } };
+ for (const [manifest, expected] of [[undefined, '9.15.4'], [{}, '9.15.4'], [{ packageManager: 'pnpm@10.12.4' }, '10.12.4']]) {
+  await rm(join(dir, 'order'));
+  await writeFile(join(dir, 'rer-project.json'), JSON.stringify(managed));
+  if (manifest) await writeFile(join(dir, 'package.json'), JSON.stringify(manifest));
+  run(projectScript, dir, env);
+  assert.equal(await readFile(join(dir, 'order'), 'utf8'), `${expected}\nbuild\nverify\nartifact\n`);
+  const installs = (await readFile(join(dir, 'installs'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(installs.at(-1), ['install', '--global', '--no-audit', '--no-fund', `pnpm@${expected}`]);
+ }
+ await rm(join(dir, 'order'));
+ assert.throws(() => run(projectScript, dir, { ...env, INSTALLED_VERSION: '9.15.4' }), error => /version mismatch/.test(error.stderr.toString()));
+ await assert.rejects(readFile(join(dir, 'order')));
+ const installsBefore = await readFile(join(dir, 'installs'), 'utf8');
+ for (const packageManager of ['pnpm@latest', 'pnpm@^10.12.4', 'pnpm@10', 'pnpm@10.12.4\ntouch injected', 'unknown@1.2.3', null]) {
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ packageManager }));
+  assert.throws(() => run(projectScript, dir, env), error => /must pin an exact/.test(error.stderr.toString()));
+  await assert.rejects(readFile(join(dir, 'order')));
+  assert.equal(await readFile(join(dir, 'installs'), 'utf8'), installsBefore);
+ }
+ await writeFile(join(dir, 'package.json'), '{}');
  await writeFile(join(dir, 'rer-project.json'), JSON.stringify({ ...project, operations: { build: 'exit 7', verify: 'touch should-not-run' } }));
- assert.throws(() => run(projectScript, dir, { ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full' }));
+ assert.throws(() => run(projectScript, dir, env));
  await assert.rejects(readFile(join(dir, 'should-not-run')));
 });
 async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = {}, manifestSymlink = false) {
