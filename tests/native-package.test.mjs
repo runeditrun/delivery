@@ -11,6 +11,7 @@ const attestScript = workflowScript('Convert candidate artifact to a bounded raw
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const descriptor = {schema:1,deployment:{target:'cloudflare-workers',artifactFile:'app.json'}};
 const prelude = `globalThis.fetch = async url => {
+  if (['package.json','.node-version','.nvmrc','scripts/agent-bootstrap.sh'].some(name => String(url).includes('/contents/'+name+'?ref='))) return new Response(null,{status:404});
   if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'publisher/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40),repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'});
   if (String(url).includes('/git/commits/')) return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}});
   if (String(url).includes('rer-project.json')) return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(JSON.stringify(descriptor))}).toString('base64')});
@@ -29,7 +30,7 @@ async function fixture(t) {
   const run = async () => {
     const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
     await writeFile(join(root,'candidate/app.json'),bytes);
-    execFileSync(process.execPath,['--input-type=module','-e',prelude+attestScript],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',NODE_VERSION:process.versions.node,NODE_VERSION_SOURCE:'default',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
+    execFileSync(process.execPath,['--input-type=module','-e',prelude+attestScript],{cwd:root,env:{...process.env,BROKER_URL:'https://broker.example',ACTIONS_ID_TOKEN_REQUEST_URL:'https://oidc.example?x=1',GITHUB_REPOSITORY:'publisher/app',GITHUB_SHA:'b'.repeat(40),BUILD_PROFILE:'project',ARTIFACT_FILE:'app.json',VERIFICATION_PROFILE:'full',WORKFLOW_INPUTS_JSON:JSON.stringify({build_profile:'project',artifact_file:'app.json',verification_profile:'full'}),NODE_VERSION:process.versions.node,NODE_VERSION_SOURCE:'default',GITHUB_RUN_ID:'3',GITHUB_RUN_ATTEMPT:'1'},stdio:'pipe'});
     return bytes;
   };
   return {root,manifest,run,worker,asset};

@@ -87,3 +87,24 @@ execute extracted workflow scripts with test-only GitHub/OIDC responses and real
 local artifacts; they do not establish hosted GitHub Actions or provider proof.
 The same checks run in Actions once per push to `main`; branches use local or
 remote verification before landing.
+
+## Build-input provenance and promotion
+
+New runs produce receipt schema 3 with a canonical versioned build-input identity,
+complete workflow inputs and command arguments, independently resolved immutable
+Node/package-manager pins, build-job runtime/runner observations, and explicit
+execution constraints. See [BUILD-INPUTS.md](BUILD-INPUTS.md) for the wire contract.
+The isolated attestation job constructs the identity; candidate manifests cannot
+supply an eligible receipt. Existing payload validation and broker OIDC gates apply.
+
+Project commands and edition lifecycle/verification commands start with a fixed
+minimal environment allowlist and an initially empty HOME. They still have access
+to Git metadata, host files/processes, clock and network on the hosted runner.
+Every current build is therefore explicitly **ineligible for promotion**. Matching
+inputs or a project's reproducibility claim cannot override that rule. Missing
+observations are recorded as additional ineligibility reasons.
+
+Schema-1/2 receipts remain usable under existing consumers and are not promotable.
+The new schema-3 producer requires a coordinated platform consumer update before
+customer workflows are repinned; today's schema-1/2-only consumer refuses it.
+This change neither implements promotion nor changes customer workflow pins.

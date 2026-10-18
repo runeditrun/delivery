@@ -61,9 +61,10 @@ async function attest(t, overrides = {}, artifactOverrides = {}, envOverrides = 
  await writeFile(join(dir, 'candidate/rer-worker-artifact.json'), JSON.stringify({ ...artifact, ...artifactOverrides }));
  if (manifestSymlink) { await rm(join(dir, 'candidate/rer-worker-artifact.json')); await symlink('../outside.json', join(dir, 'candidate/rer-worker-artifact.json')); await writeFile(join(dir, 'outside.json'), JSON.stringify(artifact)); }
  const remote = JSON.stringify({ ...project, ...overrides });
- const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(String(url).includes('sources.lock'))throw Error('Project mode must not fetch unused source lock'); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
+ const prelude = `globalThis.fetch = async url => { if (String(url).includes('oidc')) return Response.json({value:'x.'+Buffer.from(JSON.stringify({job_workflow_ref:'org/delivery/.github/workflows/trusted-build.yml@'+'a'.repeat(40), repository_id:'1',repository_owner_id:'2'})).toString('base64url')+'.x'}); if(String(url).includes('/git/commits/'))return Response.json({sha:'b'.repeat(40),tree:{sha:'c'.repeat(40)}}); if(['package.json','.node-version','.nvmrc','scripts/agent-bootstrap.sh'].some(name => String(url).includes('/contents/'+name+'?ref=')))return new Response(null,{status:404}); if(String(url).includes('sources.lock'))throw Error('Project mode must not fetch unused source lock'); if(String(url).includes('rer-project.json'))return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(remote)}).toString('base64')}); throw Error('unexpected fetch '+url); };\n`;
  const env = { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_REPOSITORY: 'org/app', GITHUB_SHA: 'b'.repeat(40), BUILD_PROFILE: 'project', ARTIFACT_FILE: 'rer-worker-artifact.json', VERIFICATION_PROFILE: 'full', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', GITHUB_RUN_ID: '3', GITHUB_RUN_ATTEMPT: '1' };
- run(prelude + attestScript, dir, { ...env, ...envOverrides });
+ const supplied = { build_profile: env.BUILD_PROFILE, artifact_file: env.ARTIFACT_FILE, verification_profile: env.VERIFICATION_PROFILE, pnpm_version: '8.15.6', installation_id: 'installation', broker_url: env.BROKER_URL, environment: 'preview' };
+ run(prelude + attestScript, dir, { WORKFLOW_INPUTS_JSON: JSON.stringify(supplied), ...env, ...envOverrides });
  return { receipt: JSON.parse(await readFile(join(dir, 'accepted/release-provenance.json'), 'utf8')), remote };
 }
 test('isolated attestation binds generic package to immutable descriptor and source tree without source lock', async t => {
@@ -90,7 +91,7 @@ test('immutable descriptor mismatch prevents generic attestation', async t => {
 test('only isolated attestation job has OIDC and never checks out candidate', () => {
  const [build, attestJob] = workflow.split('  attest:');
  assert.doesNotMatch(build, /id-token: write/); assert.match(attestJob, /id-token: write/);
- assert.doesNotMatch(attestJob, /uses: actions\/checkout|execFileSync|pnpm /);
+ assert.doesNotMatch(attestJob, /uses: actions\/checkout|node:child_process|(?<!\.)\b(?:execFileSync|spawn|exec)\s*\(/);
  assert.match(build, /persist-credentials: false/);
  assert.match(build, /default: edition/);
 });
