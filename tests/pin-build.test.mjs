@@ -52,7 +52,7 @@ async function fixture(t) {
   git(checkout, 'reset', '--hard', '-q', sourceCommit);
   const workflowSha = 'a'.repeat(40), workflowRef = `org/delivery/.github/workflows/trusted-build.yml@${workflowSha}`;
   const projection = { schema: 1, sourceRepository: 'publisher/seed', sourceRepositoryId: '24681012', sourceCommit, sourceTree, treeSha, workflowRef, artifactFile: 'app.json', sourceProvenance: 'project-descriptor', sourceLockSha256: sha256(descriptor), files, generated };
-  const env = { GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: 'org/delivery', GITHUB_WORKFLOW_REF: 'org/delivery/.github/workflows/trusted-build.yml@refs/heads/main', GITHUB_WORKFLOW_SHA: workflowSha, GITHUB_SHA: workflowSha, GITHUB_REF: 'refs/heads/main', SOURCE_REPOSITORY: projection.sourceRepository, SOURCE_REPOSITORY_ID: projection.sourceRepositoryId, SOURCE_COMMIT: sourceCommit, WORKFLOW_REF: workflowRef, BROKER_URL: 'https://broker.example', ARTIFACT_FILE: 'app.json', VERIFICATION_PROFILE: 'full', BUILD_PROFILE: 'project', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', PIN_MODE: 'true', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '1' };
+  const env = { GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: 'org/delivery', GITHUB_WORKFLOW_REF: 'org/delivery/.github/workflows/trusted-build.yml@refs/heads/main', GITHUB_WORKFLOW_SHA: workflowSha, GITHUB_SHA: workflowSha, GITHUB_REF: 'refs/heads/main', SOURCE_REPOSITORY: projection.sourceRepository, SOURCE_REPOSITORY_ID: projection.sourceRepositoryId, SOURCE_COMMIT: sourceCommit, WORKFLOW_REF: workflowRef, BROKER_URL: 'https://broker.example', ARTIFACT_FILE: 'app.json', VERIFICATION_PROFILE: 'full', BUILD_PROFILE: 'project', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', PIN_MODE: 'true', RELEASE_ENVIRONMENT: 'production', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '1' };
   const claims = { workflow_ref: env.GITHUB_WORKFLOW_REF, workflow_sha: workflowSha, event_name: 'workflow_dispatch', repository_id: '9988776655', repository_owner_id: '8877665544' };
   const network = (changes = {}) => `
     const networkProjection = ${JSON.stringify({ ...projection, ...changes.projection })};
@@ -66,7 +66,7 @@ async function fixture(t) {
       if (url.hostname === 'oidc.example') return Response.json({value:'x.'+Buffer.from(JSON.stringify(networkClaims)).toString('base64url')+'.x'});
       if (url.pathname.includes('/git/commits/')) return Response.json({sha:${JSON.stringify(workflowSha)},tree:{sha:'b'.repeat(40)}});
       if (url.pathname.endsWith('/git/blobs/'+${JSON.stringify(files.find(file => file.path === 'rer-project.json').sha)})) return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(changes.descriptor ?? descriptor)}).toString('base64')});
-      if (url.pathname.endsWith('/prepare-pin')) {
+      if (url.pathname.endsWith('/prepare-pin') || url.pathname.endsWith('/prepare')) {
         console.log('PREPARE '+JSON.stringify({url:url.href,body:JSON.parse(init.body)}));
         return Response.json({pinArtifact:{id:'c'.repeat(64)}},{status:201});
       }
@@ -76,7 +76,7 @@ async function fixture(t) {
   return { root, checkout, env, projection, network, descriptor, claims };
 }
 
-test('pin dispatch builds the projected tree at a neutral path and attests through prepare-pin without installation identity', async t => {
+async function buildsProjectedPin(t) {
   const f = await fixture(t);
   t.after(() => rm(neutral, { recursive: true, force: true }));
   run(f.network() + materialize, f.root, f.env);
@@ -123,10 +123,24 @@ test('pin dispatch builds the projected tree at a neutral path and attests throu
   assert.equal(request.body.sourceCommit, f.projection.sourceCommit);
   assert.equal(request.body.treeSha, f.projection.treeSha);
   assert.equal(request.body.installationId, undefined);
-  assert.equal(request.body.environment, undefined);
-});
+  assert.equal(request.body.environment, f.env.RELEASE_ENVIRONMENT);
+  const commonBody = {
+    sourceProvenance: 'project-descriptor', verificationProfile: f.env.VERIFICATION_PROFILE,
+    commitSha: f.env.GITHUB_SHA, runId: f.env.GITHUB_RUN_ID, runAttempt: f.env.GITHUB_RUN_ATTEMPT,
+    ref: f.env.GITHUB_REF, artifactId: '56789', archiveDigest: `sha256:${'d'.repeat(64)}`,
+    artifactSha256: receipt.artifactSha256, treeSha: f.projection.treeSha, sourceLockSha256: sha256(f.descriptor),
+  };
+  assert.deepEqual(request.body, {
+    ...commonBody, sourceRepository: f.projection.sourceRepository, sourceRepositoryId: f.projection.sourceRepositoryId,
+    sourceCommit: f.projection.sourceCommit, workflowRef: f.projection.workflowRef, environment: f.env.RELEASE_ENVIRONMENT,
+  });
+  const ordinaryResult = run(f.network() + prepare, f.root, { ...f.env, PIN_MODE: 'false', INSTALLATION_ID: 'ordinary-installation', RELEASE_ENVIRONMENT: 'preview', ARTIFACT_ID: '56789', ARCHIVE_DIGEST: 'd'.repeat(64) });
+  const ordinaryRequest = JSON.parse(ordinaryResult.split('\n').find(line => line.startsWith('PREPARE ')).slice(8));
+  assert.equal(new URL(ordinaryRequest.url).pathname, '/api/delivery/broker/prepare');
+  assert.deepEqual(ordinaryRequest.body, { ...commonBody, installationId: 'ordinary-installation', environment: 'preview' });
+}
 
-test('pin projection and isolated attestation reject source and workflow substitutions before accepting artifacts', async t => {
+async function rejectsSubstitutions(t) {
   const f = await fixture(t);
   const invalid = [
     [{ sourceRepositoryId: '42' }, {}],
@@ -151,4 +165,9 @@ test('pin projection and isolated attestation reject source and workflow substit
     { descriptor: JSON.stringify({ schema: 1, deployment: { target: 'untrusted' } }) },
   ]) assert.throws(() => run(f.network(changes) + attest, f.root, f.env), error => /mismatch/.test(error.stderr));
   await assert.rejects(readFile(join(f.root, 'accepted/release-provenance.json')));
+}
+
+test('pin dispatch prepares the projected artifact with its environment and rejects source or workflow substitutions', async t => {
+  await buildsProjectedPin(t);
+  await rejectsSubstitutions(t);
 });
