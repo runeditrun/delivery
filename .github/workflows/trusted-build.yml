@@ -586,19 +586,25 @@ jobs:
           const body = JSON.stringify({ sourceProvenance: receipt.sourceProvenance, verificationProfile: receipt.verificationProfile, installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 });
           const deadline = Date.now() + 360000;
           let prepared = false, refused = false;
-          for (let attempt = 1; attempt <= 4 && Date.now() < deadline; attempt++) {
+          for (let attempt = 1; attempt <= 4 && Date.now() + 95000 < deadline; attempt++) {
             const controller = new AbortController();
-            let timer, wait = 2000 * attempt;
+            let timer, expire, wait = 2000 * attempt;
             const timeout = new Promise((_, reject) => {
-              timer = setTimeout(() => { controller.abort(); reject(new DOMException('Prepare attempt expired', 'TimeoutError')); }, Math.min(120000, deadline - Date.now()));
+              expire = () => { const error = new DOMException('Prepare attempt expired', 'TimeoutError'); controller.abort(error); reject(error); };
+              timer = setTimeout(expire, Math.min(120000, deadline - Date.now() - 95000));
             });
             console.log(`Preparing release: attempt ${attempt}/4 (120s attempt, 360s total budget).`);
             try {
               const outcome = await Promise.race([timeout, (async () => {
                 // Renew OIDC on retries, retaining every immutable payload field.
                 const response = await fetch(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${encodeURIComponent(origin)}`, { headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }, signal: controller.signal, redirect: 'error' });
-                if (!response.ok) { await response.body?.cancel(); return { status: response.status, oidc: true, data: {} }; }
+                if (!response.ok) { await response.body?.cancel(); return { status: response.status, oidc: true, data: {}, retryAfter: response.headers.get('retry-after') }; }
                 const { value: token } = await response.json();
+                // OIDC has its own bound. Reserve the broker's 90s ceiling plus response margin.
+                controller.signal.throwIfAborted();
+                if (deadline - Date.now() < 95000) throw new DOMException('Prepare budget exhausted', 'TimeoutError');
+                clearTimeout(timer);
+                timer = setTimeout(expire, Math.min(120000, deadline - Date.now()));
                 const result = await fetch(`${origin}/api/delivery/broker/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body, redirect: 'error', signal: controller.signal });
                 // Reading the response body shares the attempt deadline too.
                 const text = await result.text();

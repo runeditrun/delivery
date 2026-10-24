@@ -124,7 +124,7 @@ test('registered default artifact filename works in build and independent attest
 });
 
 const prepareScript = workflowScript('Prepare release through authenticated broker');
-async function prepareClient(t, responses) {
+async function prepareClient(t, responses, oidc = {}) {
  const dir = await temporary(t);
  await mkdir(join(dir, 'accepted'));
  await writeFile(join(dir, 'accepted/release-provenance.json'), JSON.stringify({ runId: '77', runAttempt: '1', commitSha: 'b'.repeat(40) }));
@@ -137,8 +137,18 @@ async function prepareClient(t, responses) {
    return timeout(callback, ms, ...args);
  };
  const responses = ${JSON.stringify(responses)}, requests = [];
+ const oidc = ${JSON.stringify(oidc)}; let oidcCalls = 0;
  globalThis.fetch = async (url, init = {}) => {
-   if (String(url).includes('oidc')) return Response.json({value:'synthetic-oidc-1'});
+   if (String(url).includes('oidc')) {
+     console.log('OIDC ' + Date.now()); oidcCalls++;
+     if (oidc.retryAfter && oidcCalls === 1) return new Response(null, {status:429,headers:{'Retry-After':String(oidc.retryAfter)}});
+     if (oidc.latency && oidcCalls === 1) mock.timers.tick(oidc.latency);
+     return Response.json({value:'synthetic-oidc-1'});
+   }
+   if (oidc.latency) {
+     init.signal.addEventListener('abort', () => console.log('POST_ABORT'), {once:true});
+     mock.timers.tick(90000);
+   }
    requests.push({ body: init.body, signal: Boolean(init.signal) });
    console.log('REQUEST ' + JSON.stringify(requests.at(-1)));
    const answer = responses[Math.min(requests.length - 1, responses.length - 1)];
@@ -182,4 +192,21 @@ test('prepare never retries definite authentication, provenance or validation re
   assert.equal(requests(result).length, 1);
   assert.doesNotMatch(result.output, /synthetic private detail/);
  }
+});
+
+
+test('OIDC retryable authorization preserves Retry-After before renewing', async t => {
+ const result = await prepareClient(t, [{status:201,body:{release:{id:'a'.repeat(64)}}}], {retryAfter:30});
+ assert.equal(result.ok,true,result.output);
+ const times=result.output.split('\n').filter(line=>line.startsWith('OIDC ')).map(line=>Number(line.slice(5)));
+ assert.equal(times.length,2,result.output);
+ assert.equal(times[1]-times[0],30000,result.output);
+ assert.equal(requests(result).length,1);
+});
+
+test('slow bounded OIDC renewal leaves a full broker response window', async t => {
+ const result = await prepareClient(t, [{status:201,body:{release:{id:'a'.repeat(64)}}}], {latency:119999});
+ assert.equal(result.ok,true,result.output);
+ assert.doesNotMatch(result.output,/POST_ABORT/);
+ assert.equal(requests(result).length,1,result.output);
 });
