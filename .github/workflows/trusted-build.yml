@@ -581,12 +581,53 @@ jobs:
           import { readFile } from 'node:fs/promises';
           const env = process.env;
           const origin = new URL(env.BROKER_URL).origin;
-          const response = await fetch(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${encodeURIComponent(origin)}`, { headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
-          if (!response.ok) throw new Error('OIDC request failed');
-          const { value: token } = await response.json();
           const receipt = JSON.parse(await readFile('accepted/release-provenance.json', 'utf8'));
-          const body = { sourceProvenance: receipt.sourceProvenance, verificationProfile: receipt.verificationProfile, installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 };
-          const result = await fetch(`${origin}/api/delivery/broker/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error' });
-          if (!result.ok) throw new Error(`Broker prepare failed (${result.status}): ${await result.text()}`);
-          console.log('Release prepared for owner review.');
+          // Serialize once: a retry reconciles this retained artifact, never another paid build.
+          const body = JSON.stringify({ sourceProvenance: receipt.sourceProvenance, verificationProfile: receipt.verificationProfile, installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 });
+          const deadline = Date.now() + 360000;
+          let prepared = false, refused = false;
+          for (let attempt = 1; attempt <= 4 && Date.now() < deadline; attempt++) {
+            const controller = new AbortController();
+            let timer, wait = 2000 * attempt;
+            const timeout = new Promise((_, reject) => {
+              timer = setTimeout(() => { controller.abort(); reject(new DOMException('Prepare attempt expired', 'TimeoutError')); }, Math.min(120000, deadline - Date.now()));
+            });
+            console.log(`Preparing release: attempt ${attempt}/4 (120s attempt, 360s total budget).`);
+            try {
+              const outcome = await Promise.race([timeout, (async () => {
+                // Renew OIDC on retries, retaining every immutable payload field.
+                const response = await fetch(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${encodeURIComponent(origin)}`, { headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }, signal: controller.signal, redirect: 'error' });
+                if (!response.ok) { await response.body?.cancel(); return { status: response.status, oidc: true, data: {} }; }
+                const { value: token } = await response.json();
+                const result = await fetch(`${origin}/api/delivery/broker/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body, redirect: 'error', signal: controller.signal });
+                // Reading the response body shares the attempt deadline too.
+                const text = await result.text();
+                let data = {}; try { data = JSON.parse(text); } catch {}
+                return { status: result.status, data, retryAfter: result.headers.get('retry-after') };
+              })()]);
+              if (!outcome.oidc && outcome.status === 201 && /^[a-f0-9]{64}$/.test(outcome.data?.release?.id ?? '')) { prepared = true; break; }
+              const pending = ['provenance_pending', 'prepare_pending'].includes(outcome.data?.code);
+              const transient = [408, 425, 429, 502, 503, 504].includes(outcome.status) && (!outcome.data?.code || pending);
+              if (!(pending && [202, 503].includes(outcome.status)) && !transient) {
+                console.error(`::error::prepare_refused: ${outcome.oidc ? 'Build authorization' : 'Release preparation'} was refused (HTTP ${outcome.status}). Review this build with Run Edit Run support.`);
+                refused = true; break;
+              }
+              const retry = outcome.retryAfter;
+              const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : retry ? Math.max(0, (Date.parse(retry) - Date.now()) / 1000) : 0;
+              wait = Math.max(wait, Number.isFinite(seconds) ? seconds * 1000 : 0, Number.isFinite(outcome.data?.retryAfter) ? Math.max(0, outcome.data.retryAfter * 1000) : 0);
+            } catch (error) {
+              if (!(error instanceof TypeError) && !['AbortError', 'TimeoutError'].includes(error?.name)) {
+                console.error('::error::prepare_refused: Release preparation could not validate its response. Contact Run Edit Run support.');
+                refused = true; break;
+              }
+            } finally { clearTimeout(timer); }
+            if (attempt === 4 || Date.now() + wait >= deadline) break;
+            console.log(`Release preparation is pending; retrying the same artifact in ${Math.ceil(wait / 1000)}s.`);
+            await new Promise(resolve => setTimeout(resolve, wait));
+          }
+          if (prepared) console.log('Release prepared for owner review.');
+          else {
+            if (!refused) console.error('::error::prepare_retry_exhausted: Release preparation did not finish within its automatic retry budget. Contact Run Edit Run support with this build reference.');
+            process.exitCode = 1;
+          }
           JS
