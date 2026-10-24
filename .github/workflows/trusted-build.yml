@@ -24,11 +24,6 @@ on:
         required: true
         type: choice
         options: [preview, production]
-      verification_profile:
-        required: true
-        type: choice
-        default: full
-        options: [full]
       build_profile:
         required: true
         type: choice
@@ -38,6 +33,9 @@ on:
         required: true
         type: string
         default: '10.12.4'
+      canary:
+        required: true
+        type: string
   workflow_call:
     inputs:
       installation_id:
@@ -101,11 +99,12 @@ jobs:
         env:
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           SOURCE_REPOSITORY_ID: ${{ inputs.source_repository_id }}
+          CANARY: ${{ inputs.canary }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           WORKFLOW_REF: ${{ inputs.workflow_ref }}
           BROKER_URL: ${{ inputs.broker_url }}
           ARTIFACT_FILE: ${{ inputs.artifact_file }}
-          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+          VERIFICATION_PROFILE: ${{ inputs.workflow_ref != '' && 'full' || inputs.verification_profile }}
         run: |
           node --input-type=module <<'JS'
           import { mkdir, rm, rename, lstat } from 'node:fs/promises';
@@ -117,7 +116,7 @@ jobs:
           if (broker.protocol !== 'https:' || broker.username || broker.password || broker.pathname !== '/' || broker.search || broker.hash) throw Error('Broker must be an HTTPS origin');
           const workflow = /^([\w.-]+\/[\w.-]+\/\.github\/workflows\/[\w.-]+\.ya?ml)@([a-f0-9]{40})$/.exec(env.WORKFLOW_REF ?? '');
           if (!workflow || workflow[1] !== env.GITHUB_WORKFLOW_REF?.split('@')[0] || workflow[2] !== env.GITHUB_WORKFLOW_SHA) throw Error('Pin dispatch must execute the requested immutable workflow');
-          if (!/^[\w.-]+\/[\w.-]+$/.test(env.SOURCE_REPOSITORY ?? '') || !/^[1-9][0-9]*$/.test(env.SOURCE_REPOSITORY_ID ?? '') || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT ?? '') || env.VERIFICATION_PROFILE !== 'full') throw Error('Invalid pin source inputs');
+          if (!/^[\w.-]+\/[\w.-]+$/.test(env.SOURCE_REPOSITORY ?? '') || !/^[1-9][0-9]*$/.test(env.SOURCE_REPOSITORY_ID ?? '') || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT ?? '') || env.VERIFICATION_PROFILE !== 'full' || !/^[a-f0-9]{32}$/.test(env.CANARY ?? '')) throw Error('Invalid pin source inputs');
           const url = new URL('/api/delivery/broker/pin-source', broker);
           for (const [key, value] of Object.entries({ sourceRepository: env.SOURCE_REPOSITORY, sourceCommit: env.SOURCE_COMMIT, workflowRef: env.WORKFLOW_REF })) url.searchParams.set(key, value);
           const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(120000) });
@@ -148,6 +147,8 @@ jobs:
           await rm(destination, { recursive: true, force: true });
           await mkdir(destination);
           await rename(join(checkout, '.git'), join(destination, '.git'));
+          const seed = env.CANARY, uuid32 = `${seed.slice(0,8)}-${seed.slice(8,12)}-${seed.slice(12,16)}-${seed.slice(16,20)}-${seed.slice(20)}`.slice(0,32);
+          execFileSync('git', ['-C', destination, 'remote', 'set-url', 'origin', `https://github.com/runeditrun/rer-managed-${uuid32}.git`]);
           execFileSync('git', ['-C', destination, 'checkout-index', '--all'], { stdio: 'inherit' });
           // Use a neutral local commit so source checks see precisely the projected tree as HEAD.
           const commit = execFileSync('git', ['-C', destination, 'commit-tree', projection.treeSha], { input: 'Pin build source\n', encoding: 'utf8', env: { PATH: env.PATH, GIT_AUTHOR_NAME: 'Run Edit Run', GIT_AUTHOR_EMAIL: 'delivery@runeditrun.com', GIT_COMMITTER_NAME: 'Run Edit Run', GIT_COMMITTER_EMAIL: 'delivery@runeditrun.com', GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' } }).trim();
@@ -288,7 +289,7 @@ jobs:
       - name: Verify and package candidate
         if: inputs.build_profile == 'edition'
         env:
-          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+          VERIFICATION_PROFILE: ${{ inputs.workflow_ref != '' && 'full' || inputs.verification_profile }}
         run: |
           case "$VERIFICATION_PROFILE" in
             full) verification='pnpm verify' ;;
@@ -302,7 +303,7 @@ jobs:
         if: inputs.build_profile == 'project'
         env:
           ARTIFACT_FILE: ${{ inputs.artifact_file }}
-          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+          VERIFICATION_PROFILE: ${{ inputs.workflow_ref != '' && 'full' || inputs.verification_profile }}
         run: |
           node --input-type=module <<'JS'
           import { readFile, appendFile } from 'node:fs/promises';
@@ -454,7 +455,7 @@ jobs:
           BUILD_PROFILE: ${{ inputs.build_profile }}
           BROKER_URL: ${{ inputs.broker_url }}
           ARTIFACT_FILE: ${{ inputs.artifact_file }}
-          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+          VERIFICATION_PROFILE: ${{ inputs.workflow_ref != '' && 'full' || inputs.verification_profile }}
           NODE_VERSION: ${{ needs.build.outputs.node_version }}
           NODE_VERSION_SOURCE: ${{ needs.build.outputs.node_version_source }}
           NODE_PIN: ${{ needs.build.outputs.node_pin }}
@@ -464,6 +465,7 @@ jobs:
           PIN_MODE: ${{ inputs.workflow_ref != '' && 'true' || 'false' }}
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           SOURCE_REPOSITORY_ID: ${{ inputs.source_repository_id }}
+          CANARY: ${{ inputs.canary }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           WORKFLOW_REF: ${{ inputs.workflow_ref }}
         run: |
@@ -619,7 +621,7 @@ jobs:
           const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
           if (manifestBytes.byteLength > MAX_ARTIFACT_MANIFEST_BYTES) throw new Error('Artifact manifest exceeds size limit');
           await writeFile(`accepted/${env.ARTIFACT_FILE}`, manifestBytes, { flag: 'wx' });
-          const receipt = { schema: pinMode ? 2 : 3, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, nodeVersion: env.NODE_VERSION, nodeVersionSource: env.NODE_VERSION_SOURCE, ...(pinMode ? { sourceRepository: env.SOURCE_REPOSITORY, sourceRepositoryId: env.SOURCE_REPOSITORY_ID, sourceCommit: env.SOURCE_COMMIT } : { repositoryId: claims.repository_id, ownerId: claims.repository_owner_id }), commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef, artifactFile: env.ARTIFACT_FILE };
+          const receipt = { schema: pinMode ? 2 : 3, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, nodeVersion: env.NODE_VERSION, nodeVersionSource: env.NODE_VERSION_SOURCE, ...(pinMode ? { sourceRepository: env.SOURCE_REPOSITORY, sourceRepositoryId: env.SOURCE_REPOSITORY_ID, sourceCommit: env.SOURCE_COMMIT, canarySha256: hash(env.CANARY) } : { repositoryId: claims.repository_id, ownerId: claims.repository_owner_id }), commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef, artifactFile: env.ARTIFACT_FILE };
           if (!pinMode) {
           // Constructed only here, outside candidate execution. No candidate assertion
           // or build-job output can opt an unrestricted hosted runner into promotion.

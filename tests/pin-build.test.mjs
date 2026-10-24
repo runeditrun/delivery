@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm, readdir } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { workflowScript } from './workflow-script.mjs';
 
 const materialize = workflowScript('Materialize the exact projected pin tree in a neutral workspace');
@@ -22,6 +22,7 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(checkout, '.github/workflows'), { recursive: true });
   git(checkout, 'init', '-q');
+  git(checkout, 'remote', 'add', 'origin', 'https://github.com/publisher/seed.git');
   git(checkout, 'config', 'user.name', 'Test publisher');
   git(checkout, 'config', 'user.email', 'publisher@example.test');
   const project = { schema: 1, deployment: { target: 'cloudflare-workers', artifactFile: 'app.json' }, operations: { build: 'node build.mjs', verify: 'test -s delivery-artifact/app.json' } };
@@ -52,7 +53,7 @@ async function fixture(t) {
   git(checkout, 'reset', '--hard', '-q', sourceCommit);
   const workflowSha = 'a'.repeat(40), workflowRef = `org/delivery/.github/workflows/trusted-build.yml@${workflowSha}`;
   const projection = { schema: 1, sourceRepository: 'publisher/seed', sourceRepositoryId: '24681012', sourceCommit, sourceTree, treeSha, workflowRef, artifactFile: 'app.json', sourceProvenance: 'project-descriptor', sourceLockSha256: sha256(descriptor), files, generated };
-  const env = { GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: 'org/delivery', GITHUB_WORKFLOW_REF: 'org/delivery/.github/workflows/trusted-build.yml@refs/heads/main', GITHUB_WORKFLOW_SHA: workflowSha, GITHUB_SHA: workflowSha, GITHUB_REF: 'refs/heads/main', SOURCE_REPOSITORY: projection.sourceRepository, SOURCE_REPOSITORY_ID: projection.sourceRepositoryId, SOURCE_COMMIT: sourceCommit, WORKFLOW_REF: workflowRef, BROKER_URL: 'https://broker.example', ARTIFACT_FILE: 'app.json', VERIFICATION_PROFILE: 'full', BUILD_PROFILE: 'project', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', PIN_MODE: 'true', RELEASE_ENVIRONMENT: 'production', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '1' };
+  const env = { CANARY: randomBytes(16).toString('hex'), GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: 'org/delivery', GITHUB_WORKFLOW_REF: 'org/delivery/.github/workflows/trusted-build.yml@refs/heads/main', GITHUB_WORKFLOW_SHA: workflowSha, GITHUB_SHA: workflowSha, GITHUB_REF: 'refs/heads/main', SOURCE_REPOSITORY: projection.sourceRepository, SOURCE_REPOSITORY_ID: projection.sourceRepositoryId, SOURCE_COMMIT: sourceCommit, WORKFLOW_REF: workflowRef, BROKER_URL: 'https://broker.example', ARTIFACT_FILE: 'app.json', VERIFICATION_PROFILE: 'full', BUILD_PROFILE: 'project', NODE_VERSION: process.versions.node, NODE_VERSION_SOURCE: 'default', PIN_MODE: 'true', RELEASE_ENVIRONMENT: 'production', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example?x=1', GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '1' };
   const claims = { workflow_ref: env.GITHUB_WORKFLOW_REF, workflow_sha: workflowSha, event_name: 'workflow_dispatch', repository_id: '9988776655', repository_owner_id: '8877665544' };
   const network = (changes = {}) => `
     const networkProjection = ${JSON.stringify({ ...projection, ...changes.projection })};
@@ -82,6 +83,10 @@ async function buildsProjectedPin(t) {
   run(f.network() + materialize, f.root, f.env);
   assert.equal(git(neutral, 'rev-parse', 'HEAD^{tree}'), f.projection.treeSha);
   assert.equal(git(neutral, 'status', '--porcelain'), '');
+  const seed = f.env.CANARY, uuid32 = `${seed.slice(0,8)}-${seed.slice(8,12)}-${seed.slice(12,16)}-${seed.slice(16,20)}-${seed.slice(20)}`.slice(0,32);
+  assert.equal(git(neutral, 'remote', 'get-url', 'origin'), `https://github.com/runeditrun/rer-managed-${uuid32}.git`);
+  const workflow = await readFile(new URL('../.github/workflows/trusted-build.yml', import.meta.url), 'utf8');
+  assert.ok(!workflow.slice(workflow.indexOf('  workflow_call:'), workflow.indexOf('permissions: {}')).includes('canary'));
   await assert.rejects(readFile(join(neutral, '.github/workflows/upstream.yml')));
   assert.equal(await readFile(join(neutral, 'metadata.json'), 'utf8'), '{"publisherAutomation":false}\n');
   run(projectCommands, neutral, f.env);
@@ -103,6 +108,7 @@ async function buildsProjectedPin(t) {
   assert.equal(receipt.repositoryId, undefined);
   assert.equal(receipt.ownerId, undefined);
   assert.equal(receipt.buildInputs, undefined);
+  assert.equal(receipt.canarySha256, sha256(seed));
   assert.match(await readFile(join(f.root, 'accepted/payload/modules/000000'), 'utf8'), new RegExp(neutral));
   async function inspect(path) {
     for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -112,7 +118,8 @@ async function buildsProjectedPin(t) {
         const text = await readFile(file, 'utf8');
         assert.ok(!text.includes(f.claims.repository_id));
         assert.ok(!text.includes(f.claims.repository_owner_id));
-        assert.doesNotMatch(text, /rer-managed-|\b[a-f0-9]{32}\b|\b[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\b/i);
+        assert.ok(!text.includes(seed));
+        assert.ok(!text.includes(uuid32));
       }
     }
   }
@@ -151,9 +158,10 @@ async function rejectsSubstitutions(t) {
     [{ generated: f.projection.generated.map((blob, i) => i ? blob : { ...blob, contentBase64: Buffer.from('tampered').toString('base64') }) }, {}],
     [{ files: [...f.projection.files, { type: 'blob', mode: '100644', sha: f.projection.files[0].sha, path: '../escape' }] }, {}],
     [{}, { GITHUB_WORKFLOW_SHA: 'e'.repeat(40) }],
+    [{}, { CANARY: 'invalid' }],
   ];
   for (const [projection, env] of invalid) {
-    assert.throws(() => run(f.network({ projection }) + materialize, f.root, { ...f.env, ...env }), error => /mismatch|identity|Invalid projected source entry|immutable workflow/.test(error.stderr));
+    assert.throws(() => run(f.network({ projection }) + materialize, f.root, { ...f.env, ...env }), error => /mismatch|identity|Invalid projected source entry|immutable workflow|Invalid pin source inputs/.test(error.stderr));
   }
   await assert.rejects(readFile(join(f.checkout, 'delivery-artifact/app.json')));
 
