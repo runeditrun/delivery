@@ -126,7 +126,7 @@ test('pin dispatch builds the projected tree at a neutral path and attests throu
   assert.equal(request.body.environment, undefined);
 });
 
-test('pin projection refuses source substitution, unpinned workflow and a mismatched generated tree before commands execute', async t => {
+test('pin projection and isolated attestation reject source and workflow substitutions before accepting artifacts', async t => {
   const f = await fixture(t);
   const invalid = [
     [{ sourceRepositoryId: '42' }, {}],
@@ -140,10 +140,7 @@ test('pin projection refuses source substitution, unpinned workflow and a mismat
     assert.throws(() => run(f.network({ projection }) + materialize, f.root, { ...f.env, ...env }), error => /mismatch|identity|Invalid projected source entry|immutable workflow/.test(error.stderr));
   }
   await assert.rejects(readFile(join(f.checkout, 'delivery-artifact/app.json')));
-});
 
-test('isolated pin attestation rejects direct-workflow and projected-document substitutions', async t => {
-  const f = await fixture(t);
   await mkdir(join(f.root, 'candidate'));
   await writeFile(join(f.root, 'candidate/app.json'), JSON.stringify({ schema: 1, deploymentSpec: { schema: 1 }, mainModule: 'worker.js', modules: [{ name: 'worker.js', type: 'esm', contentBase64: Buffer.from('export default {}').toString('base64') }], assets: [] }));
   for (const changes of [
