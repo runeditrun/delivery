@@ -68,7 +68,7 @@ async function fixture(t) {
       if (url.pathname.endsWith('/git/blobs/'+${JSON.stringify(files.find(file => file.path === 'rer-project.json').sha)})) return Response.json({encoding:'base64',content:Buffer.from(${JSON.stringify(changes.descriptor ?? descriptor)}).toString('base64')});
       if (url.pathname.endsWith('/prepare-pin') || url.pathname.endsWith('/prepare')) {
         console.log('PREPARE '+JSON.stringify({url:url.href,body:JSON.parse(init.body)}));
-        return Response.json({pinArtifact:{id:'c'.repeat(64)}},{status:201});
+        return Response.json({[url.pathname.endsWith('/prepare-pin') ? 'pinArtifact' : 'release']:{id:'c'.repeat(64)}},{status:201});
       }
       throw Error('Unexpected network request '+url);
     };
@@ -134,10 +134,12 @@ async function buildsProjectedPin(t) {
     ...commonBody, sourceRepository: f.projection.sourceRepository, sourceRepositoryId: f.projection.sourceRepositoryId,
     sourceCommit: f.projection.sourceCommit, workflowRef: f.projection.workflowRef, environment: f.env.RELEASE_ENVIRONMENT,
   });
-  const ordinaryResult = run(f.network() + prepare, f.root, { ...f.env, PIN_MODE: 'false', INSTALLATION_ID: 'ordinary-installation', RELEASE_ENVIRONMENT: 'preview', ARTIFACT_ID: '56789', ARCHIVE_DIGEST: 'd'.repeat(64) });
-  const ordinaryRequest = JSON.parse(ordinaryResult.split('\n').find(line => line.startsWith('PREPARE ')).slice(8));
-  assert.equal(new URL(ordinaryRequest.url).pathname, '/api/delivery/broker/prepare');
-  assert.deepEqual(ordinaryRequest.body, { ...commonBody, installationId: 'ordinary-installation', environment: 'preview' });
+  for (const environment of ['preview', 'production']) {
+    const ordinaryResult = run(f.network() + prepare, f.root, { ...f.env, PIN_MODE: 'false', INSTALLATION_ID: 'ordinary-installation', RELEASE_ENVIRONMENT: environment, ARTIFACT_ID: '56789', ARCHIVE_DIGEST: 'd'.repeat(64) });
+    const ordinaryRequest = JSON.parse(ordinaryResult.split('\n').find(line => line.startsWith('PREPARE ')).slice(8));
+    assert.equal(new URL(ordinaryRequest.url).pathname, '/api/delivery/broker/prepare');
+    assert.deepEqual(ordinaryRequest.body, { ...commonBody, installationId: 'ordinary-installation', environment });
+  }
 }
 
 async function rejectsSubstitutions(t) {

@@ -758,7 +758,8 @@ jobs:
                 let data = {}; try { data = JSON.parse(text); } catch {}
                 return { status: result.status, data, retryAfter: result.headers.get('retry-after') };
               })()]);
-              if (!outcome.oidc && outcome.status === 201 && /^[a-f0-9]{64}$/.test(pinMode ? outcome.data?.pinArtifact?.id ?? '' : outcome.data?.release?.id ?? '')) { prepared = true; break; }
+              const accepted = outcome.status === 201 || (pinMode && outcome.status === 200);
+              if (!outcome.oidc && accepted && /^[a-f0-9]{64}$/.test(pinMode ? outcome.data?.pinArtifact?.id ?? '' : outcome.data?.release?.id ?? '')) { prepared = true; break; }
               const pending = ['provenance_pending', 'prepare_pending'].includes(outcome.data?.code);
               const transient = [408, 425, 429, 502, 503, 504].includes(outcome.status) && (!outcome.data?.code || pending);
               if (!(pending && [202, 503].includes(outcome.status)) && !transient) {
