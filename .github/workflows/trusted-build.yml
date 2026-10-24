@@ -1,5 +1,43 @@
 name: RER trusted project build
 on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        required: true
+        type: string
+      source_repository_id:
+        required: true
+        type: string
+      source_commit:
+        required: true
+        type: string
+      workflow_ref:
+        required: true
+        type: string
+      broker_url:
+        required: true
+        type: string
+      artifact_file:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: choice
+        options: [preview, production]
+      verification_profile:
+        required: true
+        type: choice
+        default: full
+        options: [full]
+      build_profile:
+        required: true
+        type: choice
+        default: project
+        options: [edition, project]
+      pnpm_version:
+        required: true
+        type: string
+        default: '10.12.4'
   workflow_call:
     inputs:
       installation_id:
@@ -31,6 +69,10 @@ permissions: {}
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # A reusable call inherits its caller's event; only direct pin dispatch declares workflow_ref.
+    defaults:
+      run:
+        working-directory: ${{ inputs.workflow_ref != '' && '/tmp/rer-pin-source' || '.' }}
     permissions:
       contents: read
     outputs:
@@ -42,9 +84,80 @@ jobs:
       package_manager_version: ${{ steps.project.outputs.package_manager_version || steps.dependencies.outputs.package_manager_version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.workflow_ref == ''
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.workflow_ref != ''
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_commit }}
+          path: pin-source
+          persist-credentials: false
+      - name: Materialize the exact projected pin tree in a neutral workspace
+        if: inputs.workflow_ref != ''
+        working-directory: .
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REPOSITORY_ID: ${{ inputs.source_repository_id }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          WORKFLOW_REF: ${{ inputs.workflow_ref }}
+          BROKER_URL: ${{ inputs.broker_url }}
+          ARTIFACT_FILE: ${{ inputs.artifact_file }}
+          VERIFICATION_PROFILE: ${{ inputs.verification_profile }}
+        run: |
+          node --input-type=module <<'JS'
+          import { mkdir, rm, rename, lstat } from 'node:fs/promises';
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { join } from 'node:path';
+          const env = process.env, checkout = join(env.GITHUB_WORKSPACE, 'pin-source'), destination = '/tmp/rer-pin-source';
+          const broker = new URL(env.BROKER_URL);
+          if (broker.protocol !== 'https:' || broker.username || broker.password || broker.pathname !== '/' || broker.search || broker.hash) throw Error('Broker must be an HTTPS origin');
+          const workflow = /^([\w.-]+\/[\w.-]+\/\.github\/workflows\/[\w.-]+\.ya?ml)@([a-f0-9]{40})$/.exec(env.WORKFLOW_REF ?? '');
+          if (!workflow || workflow[1] !== env.GITHUB_WORKFLOW_REF?.split('@')[0] || workflow[2] !== env.GITHUB_WORKFLOW_SHA) throw Error('Pin dispatch must execute the requested immutable workflow');
+          if (!/^[\w.-]+\/[\w.-]+$/.test(env.SOURCE_REPOSITORY ?? '') || !/^[1-9][0-9]*$/.test(env.SOURCE_REPOSITORY_ID ?? '') || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT ?? '') || env.VERIFICATION_PROFILE !== 'full') throw Error('Invalid pin source inputs');
+          const url = new URL('/api/delivery/broker/pin-source', broker);
+          for (const [key, value] of Object.entries({ sourceRepository: env.SOURCE_REPOSITORY, sourceCommit: env.SOURCE_COMMIT, workflowRef: env.WORKFLOW_REF })) url.searchParams.set(key, value);
+          const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(120000) });
+          if (!response.ok) throw Error(`Pin source projection refused (HTTP ${response.status})`);
+          const projection = await response.json();
+          const expected = { schema: 1, sourceRepository: env.SOURCE_REPOSITORY, sourceRepositoryId: env.SOURCE_REPOSITORY_ID, sourceCommit: env.SOURCE_COMMIT, workflowRef: env.WORKFLOW_REF, artifactFile: env.ARTIFACT_FILE };
+          for (const [key, value] of Object.entries(expected)) if (projection[key] !== value) throw Error(`Pin projection mismatch: ${key}`);
+          if (!/^[a-f0-9]{40}$/.test(projection.treeSha ?? '') || !/^[a-f0-9]{40}$/.test(projection.sourceTree ?? '') || !Array.isArray(projection.files) || !projection.files.length || !Array.isArray(projection.generated)) throw Error('Invalid projected tree');
+          const git = (args, options = {}) => execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8', ...options });
+          if (git(['rev-parse', 'HEAD']).trim() !== env.SOURCE_COMMIT || git(['rev-parse', 'HEAD^{tree}']).trim() !== projection.sourceTree) throw Error('Checked-out pin source identity mismatch');
+          const known = new Set();
+          const entries = projection.files.map(file => {
+            if (file.type !== 'blob' || !['100644', '100755', '120000'].includes(file.mode) || !/^[a-f0-9]{40}$/.test(file.sha ?? '') || typeof file.path !== 'string' || file.path.startsWith('/') || /[\\\x00-\x1f\x7f]/.test(file.path) || file.path.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git') || known.has(file.path)) throw Error('Invalid projected source entry');
+            known.add(file.path);
+            return `${file.mode} ${file.sha}\t${file.path}\0`;
+          });
+          for (const blob of projection.generated) {
+            if (!/^[a-f0-9]{40}$/.test(blob.sha ?? '') || typeof blob.contentBase64 !== 'string') throw Error('Invalid generated source blob');
+            const bytes = Buffer.from(blob.contentBase64, 'base64');
+            const sha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+            if (bytes.toString('base64') !== blob.contentBase64 || sha !== blob.sha || !projection.files.some(file => file.sha === sha)) throw Error('Generated source blob identity mismatch');
+            git(['hash-object', '-w', '--stdin'], { input: bytes });
+          }
+          git(['read-tree', '--empty']);
+          git(['update-index', '-z', '--index-info'], { input: entries.join('') });
+          if (git(['write-tree']).trim() !== projection.treeSha) throw Error('Projected pin tree identity mismatch');
+          // Build source and Git metadata both live under fixed paths, independent of the build repository.
+          await rm(destination, { recursive: true, force: true });
+          await mkdir(destination);
+          await rename(join(checkout, '.git'), join(destination, '.git'));
+          execFileSync('git', ['-C', destination, 'checkout-index', '--all'], { stdio: 'inherit' });
+          // Use a neutral local commit so source checks see precisely the projected tree as HEAD.
+          const commit = execFileSync('git', ['-C', destination, 'commit-tree', projection.treeSha], { input: 'Pin build source\n', encoding: 'utf8', env: { PATH: env.PATH, GIT_AUTHOR_NAME: 'Run Edit Run', GIT_AUTHOR_EMAIL: 'delivery@runeditrun.com', GIT_COMMITTER_NAME: 'Run Edit Run', GIT_COMMITTER_EMAIL: 'delivery@runeditrun.com', GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' } }).trim();
+          execFileSync('git', ['-C', destination, 'update-ref', 'HEAD', commit]);
+          for (const file of projection.files) {
+            const stat = await lstat(join(destination, file.path));
+            if (file.mode === '120000' ? !stat.isSymbolicLink() : !stat.isFile()) throw Error('Projected source file type mismatch');
+          }
+          console.log(`Prepared projected pin tree ${projection.treeSha} in ${destination}`);
+          JS
       - name: Prepare project runner disk
         if: inputs.build_profile == 'project'
         run: |
@@ -348,12 +461,18 @@ jobs:
           BUILD_OBSERVATION: ${{ needs.build.outputs.build_observation }}
           PACKAGE_MANAGER_VERSION: ${{ needs.build.outputs.package_manager_version }}
           WORKFLOW_INPUTS_JSON: ${{ toJSON(inputs) }}
+          PIN_MODE: ${{ inputs.workflow_ref != '' && 'true' || 'false' }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REPOSITORY_ID: ${{ inputs.source_repository_id }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          WORKFLOW_REF: ${{ inputs.workflow_ref }}
         run: |
           node --input-type=module <<'JS'
           import { readFile, writeFile, mkdir, rm, lstat, open } from 'node:fs/promises';
           import { constants } from 'node:fs';
           import { createHash } from 'node:crypto';
           const env = process.env;
+          const pinMode = env.PIN_MODE === 'true';
           if (!/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(env.NODE_VERSION ?? '') || !['.node-version', '.nvmrc', 'package.json:engines.node', 'package.json:volta.node', 'scripts/agent-bootstrap.sh:NODE_VERSION', 'default'].includes(env.NODE_VERSION_SOURCE)) throw new Error('Invalid build Node runtime');
           const MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024;
           const MAX_ARTIFACT_ENTRY_BYTES = 24 * 1024 * 1024;
@@ -371,15 +490,39 @@ jobs:
           const { value: token } = await oidcResponse.json();
           // Broker verifies signature; here the runner-provided token supplies reusable workflow identity.
           const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
-          if (!/@[a-f0-9]{40}$/.test(claims.job_workflow_ref)) throw new Error('Caller must pin trusted workflow to full commit SHA');
-          const commit = await api(`/repos/${env.GITHUB_REPOSITORY}/git/commits/${env.GITHUB_SHA}`);
+          let workflowRef = claims.job_workflow_ref, projection;
+          if (pinMode) {
+            const workflow = /^([\w.-]+\/[\w.-]+\/\.github\/workflows\/[\w.-]+\.ya?ml)@([a-f0-9]{40})$/.exec(env.WORKFLOW_REF ?? '');
+            if (!workflow || claims.workflow_ref?.split('@')[0] !== workflow[1] || claims.workflow_sha !== workflow[2] || env.GITHUB_SHA !== workflow[2] || claims.event_name !== 'workflow_dispatch') throw new Error('Pin dispatch workflow identity mismatch');
+            workflowRef = env.WORKFLOW_REF;
+            const url = new URL('/api/delivery/broker/pin-source', broker);
+            for (const [key, value] of Object.entries({ sourceRepository: env.SOURCE_REPOSITORY, sourceCommit: env.SOURCE_COMMIT, workflowRef })) url.searchParams.set(key, value);
+            const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(120000) });
+            if (!response.ok) throw new Error(`Pin source projection refused (HTTP ${response.status})`);
+            projection = await response.json();
+            for (const [key, value] of Object.entries({ schema: 1, sourceRepository: env.SOURCE_REPOSITORY, sourceRepositoryId: env.SOURCE_REPOSITORY_ID, sourceCommit: env.SOURCE_COMMIT, workflowRef, artifactFile: env.ARTIFACT_FILE })) if (projection[key] !== value) throw new Error(`Pin projection mismatch: ${key}`);
+            if (!/^[a-f0-9]{40}$/.test(projection.treeSha ?? '') || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT ?? '') || !/^[1-9][0-9]*$/.test(env.SOURCE_REPOSITORY_ID ?? '') || !Array.isArray(projection.files) || !Array.isArray(projection.generated) || env.VERIFICATION_PROFILE !== 'full') throw new Error('Invalid pin projection');
+          } else if (!/@[a-f0-9]{40}$/.test(workflowRef)) throw new Error('Caller must pin trusted workflow to full commit SHA');
+          const workflowCommit = await api(`/repos/${env.GITHUB_REPOSITORY}/git/commits/${env.GITHUB_SHA}`);
+          const commit = pinMode ? { sha: workflowCommit.sha, tree: { sha: projection.treeSha } } : workflowCommit;
+          const sourceFile = async name => {
+            if (!pinMode) return api(`/repos/${env.GITHUB_REPOSITORY}/contents/${name}?ref=${env.GITHUB_SHA}`);
+            const file = projection.files.find(file => file.path === name && file.type === 'blob');
+            if (!file || !/^[a-f0-9]{40}$/.test(file.sha ?? '')) throw new Error('Projected source document is missing');
+            const generated = projection.generated.find(blob => blob.sha === file.sha);
+            const data = generated ? { encoding: 'base64', content: generated.contentBase64 } : await api(`/repos/${env.SOURCE_REPOSITORY}/git/blobs/${file.sha}`);
+            if (data.encoding !== 'base64' || typeof data.content !== 'string') throw new Error('Invalid projected source document');
+            const bytes = Buffer.from(data.content.replace(/\s/g, ''), 'base64');
+            if (createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== file.sha) throw new Error('Projected source document identity mismatch');
+            return data;
+          };
           if (!['edition', 'project'].includes(env.BUILD_PROFILE)) throw new Error('Unsupported build profile');
-          const lock = env.BUILD_PROFILE === 'edition' ? await api(`/repos/${env.GITHUB_REPOSITORY}/contents/sources.lock.json?ref=${env.GITHUB_SHA}`) : null;
+          const lock = env.BUILD_PROFILE === 'edition' ? await sourceFile('sources.lock.json') : null;
           if (commit.sha !== env.GITHUB_SHA || !/^[a-f0-9]{40}$/.test(commit.tree?.sha) || (lock !== null && (lock.encoding !== 'base64' || typeof lock.content !== 'string'))) throw new Error('Invalid immutable source response');
           if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.json$/.test(env.ARTIFACT_FILE) || env.ARTIFACT_FILE === 'release-provenance.json') throw new Error('Invalid artifact filename');
           let project, sourceProvenance = 'source-lock', sourceIdentityBytes = lock === null ? null : Buffer.from(lock.content, 'base64');
           if (env.BUILD_PROFILE === 'project') {
-            const descriptor = await api(`/repos/${env.GITHUB_REPOSITORY}/contents/rer-project.json?ref=${env.GITHUB_SHA}`);
+            const descriptor = await sourceFile('rer-project.json');
             if (descriptor.encoding !== 'base64' || typeof descriptor.content !== 'string') throw new Error('Invalid immutable project descriptor');
             sourceProvenance = 'project-descriptor';
             sourceIdentityBytes = Buffer.from(descriptor.content, 'base64');
@@ -476,7 +619,8 @@ jobs:
           const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
           if (manifestBytes.byteLength > MAX_ARTIFACT_MANIFEST_BYTES) throw new Error('Artifact manifest exceeds size limit');
           await writeFile(`accepted/${env.ARTIFACT_FILE}`, manifestBytes, { flag: 'wx' });
-          const receipt = { schema: 3, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, nodeVersion: env.NODE_VERSION, nodeVersionSource: env.NODE_VERSION_SOURCE, repositoryId: claims.repository_id, ownerId: claims.repository_owner_id, commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef: claims.job_workflow_ref, artifactFile: env.ARTIFACT_FILE };
+          const receipt = { schema: pinMode ? 2 : 3, artifactSchema: 2, verificationProfile: env.VERIFICATION_PROFILE, nodeVersion: env.NODE_VERSION, nodeVersionSource: env.NODE_VERSION_SOURCE, ...(pinMode ? { sourceRepository: env.SOURCE_REPOSITORY, sourceRepositoryId: env.SOURCE_REPOSITORY_ID, sourceCommit: env.SOURCE_COMMIT } : { repositoryId: claims.repository_id, ownerId: claims.repository_owner_id }), commitSha: commit.sha, treeSha: commit.tree.sha, sourceProvenance, sourceLockSha256: hash(sourceIdentityBytes), artifactSha256: hash(manifestBytes), runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT, workflowRef, artifactFile: env.ARTIFACT_FILE };
+          if (!pinMode) {
           // Constructed only here, outside candidate execution. No candidate assertion
           // or build-job output can opt an unrestricted hosted runner into promotion.
           const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value !== null && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}` : JSON.stringify(value);
@@ -543,8 +687,9 @@ jobs:
           receipt.buildInputs = buildInputs;
           receipt.buildInputsSha256 = hash(canonical(buildInputs));
           receipt.promotion = { eligible: false, reasons };
+          }
           await writeFile('accepted/release-provenance.json', `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
-          console.log(JSON.stringify({ schema: 3, artifactFile: env.ARTIFACT_FILE, modules: manifest.modules.length, assets: manifest.assets.length, payloadBytes: payloadBytes.total, manifestBytes: manifestBytes.byteLength }));
+          console.log(JSON.stringify({ schema: receipt.schema, artifactFile: env.ARTIFACT_FILE, modules: manifest.modules.length, assets: manifest.assets.length, payloadBytes: payloadBytes.total, manifestBytes: manifestBytes.byteLength }));
           JS
       - id: accepted
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -576,6 +721,7 @@ jobs:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_ID: ${{ steps.accepted.outputs.artifact-id }}
           ARCHIVE_DIGEST: ${{ steps.accepted.outputs.artifact-digest }}
+          PIN_MODE: ${{ inputs.workflow_ref != '' && 'true' || 'false' }}
         run: |
           node --input-type=module <<'JS'
           import { readFile } from 'node:fs/promises';
@@ -585,8 +731,9 @@ jobs:
           if (!response.ok) throw new Error('OIDC request failed');
           const { value: token } = await response.json();
           const receipt = JSON.parse(await readFile('accepted/release-provenance.json', 'utf8'));
-          const body = { sourceProvenance: receipt.sourceProvenance, verificationProfile: receipt.verificationProfile, installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT, commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 };
-          const result = await fetch(`${origin}/api/delivery/broker/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error' });
+          const pinMode = env.PIN_MODE === 'true';
+          const body = { sourceProvenance: receipt.sourceProvenance, verificationProfile: receipt.verificationProfile, ...(pinMode ? { sourceRepository: receipt.sourceRepository, sourceRepositoryId: receipt.sourceRepositoryId, sourceCommit: receipt.sourceCommit, workflowRef: receipt.workflowRef, environment: env.RELEASE_ENVIRONMENT } : { installationId: env.INSTALLATION_ID, environment: env.RELEASE_ENVIRONMENT }), commitSha: receipt.commitSha, runId: receipt.runId, runAttempt: receipt.runAttempt, ref: env.GITHUB_REF, artifactId: env.ARTIFACT_ID, archiveDigest: `sha256:${env.ARCHIVE_DIGEST.replace(/^sha256:/, '')}`, artifactSha256: receipt.artifactSha256, treeSha: receipt.treeSha, sourceLockSha256: receipt.sourceLockSha256 };
+          const result = await fetch(`${origin}/api/delivery/broker/${pinMode ? 'prepare-pin' : 'prepare'}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error' });
           if (!result.ok) throw new Error(`Broker prepare failed (${result.status}): ${await result.text()}`);
-          console.log('Release prepared for owner review.');
+          console.log(pinMode ? 'Pin artifact prepared.' : 'Release prepared for owner review.');
           JS
