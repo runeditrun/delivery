@@ -1,0 +1,15 @@
+✔ 404 immediately after upload retries the same artifact and succeeds (195.152965ms)
+✔ persistent 404 and 5xx exhaust the attempt or time budget with the last HTTP reason (630.914713ms)
+✔ 401 and 403 refuse immediately without retry (324.469982ms)
+✔ over-limit metadata refuses once with measured and allowed bytes (2160.326293ms)
+✔ under-limit and exactly 64 MiB metadata succeed with their byte counts (311.056585ms)
+✔ transport and 429 retry with bounded Retry-After; stalled reads and bodies expire (1242.257897ms)
+✔ invalid size, artifact identity or JSON fails closed without retry (1066.911759ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6154.347851

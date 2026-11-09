@@ -1,0 +1,64 @@
+✔ isolated producer hashes canonical inputs identically across runs and object order (410.271201ms)
+✔ each source, workflow, profile, toolchain and supplied argument changes the produced identity (7265.453443ms)
+✔ missing or forged observations never make a hosted build promotable (1060.099063ms)
+✔ real project commands lose GitHub environment but can read time, git and network, so their artifacts stay ineligible (711.880061ms)
+✔ isolated Node pin resolution follows immutable source precedence and never executes bootstrap (977.698022ms)
+✔ native schema-2 attestation preserves exact manifest and all binary payload bytes (145.06799ms)
+✔ native payload identities cannot redirect reads or substitute bytes (1642.240028ms)
+✔ native payload symlinks and parent-directory links fail without copying outside bytes (297.842094ms)
+✔ the first exact pin wins across files, manifest fields and a literal bootstrap without executing it (366.890832ms)
+✔ no pin, ranges, partial versions, aliases and dynamic bootstrap declarations use the configured fallback (607.783002ms)
+✔ producer schema-1 stages byte-identical files in a fresh external tree (239.05726ms)
+✔ producer schema-2 stages byte-identical files in a fresh external tree (186.142052ms)
+✔ producer rejects unsafe and reserved artifact filenames before accessing content (1477.906757ms)
+✔ producer rejects symbolic links at every upload boundary and nested entry before opening content (2752.727205ms)
+✔ producer rejects hard-linked manifest and payload files before opening content (1810.077259ms)
+✔ producer requires directory package and payload roots and a regular manifest (591.366169ms)
+✔ producer refuses named pipe without opening it (937.042256ms)
+✔ producer refuses socket without opening it (674.222477ms)
+✖ producer refuses character device without opening it (13.319732ms)
+✖ producer refuses block device without opening it (29.512533ms)
+✔ producer detects leaf inode substitution and removes a partly copied snapshot (132.526624ms)
+✔ producer refuses a leaf symlink substituted at open without reading its target (105.056207ms)
+✔ producer refuses a FIFO substituted at open without blocking (127.874683ms)
+✔ producer detects directory substitution even when the leaf inode stays the same (196.195376ms)
+✔ producer rechecks the opened file link count after inventory (181.835778ms)
+✔ producer rejects content changes while copying and discards the snapshot (167.812786ms)
+✔ producer refuses staging locations inside the workspace or without an absolute runner path (1283.38146ms)
+✔ project-owned commands receive declared pnpm, work undeclared and propagate failure (2474.563699ms)
+✔ isolated attestation binds generic package to immutable descriptor and source tree without source lock (159.352276ms)
+✔ isolated provenance records the build runtime rather than its own Node and rejects invalid runtime outputs (1730.750393ms)
+✔ immutable descriptor mismatch prevents generic attestation (893.351826ms)
+✔ only isolated attestation job has OIDC and never checks out candidate (4.808676ms)
+✔ attestation rejects traversal, secret entries, wrong broker origins and filename substitution (2311.035528ms)
+✔ candidate manifest symlinks and missing generic deployment specifications are rejected (404.373601ms)
+✔ registered default artifact filename works in build and independent attestation (336.434531ms)
+✔ prepare automatically retries transient and uncertain outcomes with the identical payload (1686.85215ms)
+✔ prepare stops at a bounded typed exhaustion for persistent transient failures (602.583139ms)
+✔ prepare never retries definite authentication, provenance or validation refusals (685.132322ms)
+✔ OIDC retryable authorization preserves Retry-After before renewing (117.483735ms)
+✔ slow bounded OIDC renewal leaves a full broker response window (213.103156ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 38
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 14262.852889
+
+✖ failing tests:
+
+test at tests/producer-stage.test.mjs:142:85
+✖ producer refuses character device without opening it (13.319732ms)
+  TypeError: Cannot read properties of undefined (reading 'trim')
+      at TestContext.<anonymous> (file:///workspace/delivery/tests/producer-stage.test.mjs:157:83)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+
+test at tests/producer-stage.test.mjs:142:85
+✖ producer refuses block device without opening it (29.512533ms)
+  TypeError: Cannot read properties of undefined (reading 'trim')
+      at TestContext.<anonymous> (file:///workspace/delivery/tests/producer-stage.test.mjs:157:83)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)

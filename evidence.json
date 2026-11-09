@@ -1,0 +1,64 @@
+{
+  "files": [
+    {
+      "blob": "03181957c43921727a0102f4966255d16ab732de",
+      "bytes": 2425,
+      "path": "PLAN.md",
+      "sha256": "1b5d27f5aa253f00009384ef1e8b4c740da0f9e2113004fb8bb20a31574b772c"
+    },
+    {
+      "blob": "bc48d9bdd0bbd87a1cecbf2b7d726b41431aa13f",
+      "bytes": 7940,
+      "path": "REPORT.md",
+      "sha256": "7ac938d21b7b5ecc4e31a2135190fa6d735c23c36ccc8a8049af8473e31f5c86"
+    },
+    {
+      "blob": "f63b154a1a6784be9226a936a9530609d3811d0e",
+      "bytes": 4905,
+      "path": "baseline-tests.tap",
+      "sha256": "6ad06a883d42a6b6a111c7c814b738bd65aa17289175ff58cca94b66d8c0c9b9"
+    },
+    {
+      "blob": "16d9bd427ead2159e4626e1f840ce469c4bcdc9d",
+      "bytes": 255,
+      "path": "ci-discovery.json",
+      "sha256": "7924805ee0c09e251036ad87000dbaaa33e86e43e7eac0c0bd4a69bafa804d4a"
+    },
+    {
+      "blob": "be392aa4a1ac4471792c431ada8ae7f4af9d68de",
+      "bytes": 545,
+      "path": "ci-receipt.json",
+      "sha256": "dd303fa3f4dd741fc05ad50d94795ae10a99a1912d4c30376bd9c355530be081"
+    },
+    {
+      "blob": "26bd69bb33a5d06a9554d7ae7422ed18ac1b94d7",
+      "bytes": 5513,
+      "path": "full-tests.tap",
+      "sha256": "7d1014ba15e0786b85b4fad97b1cc6a83a8d1937bd2616b102462df37e617acf"
+    },
+    {
+      "blob": "6e262d53a3804b3c7b39aa47a51f61d3584a9091",
+      "bytes": 734,
+      "path": "metadata-tests.tap",
+      "sha256": "da5d33f065c4d74b490e9ac692c3cacbd467f1921341415524a49e53535b8432"
+    },
+    {
+      "blob": "ba46d5a9cb9e9eac8e0edc9893ea7c03f960bfe4",
+      "bytes": 151,
+      "path": "pr-receipt.json",
+      "sha256": "cfa32b2a3d583bd6851a470cdb06c45e4f4b5879acca4e00100b5de2c8b05936"
+    },
+    {
+      "blob": "3eb994e82c7913bfdcd1e77d077195e5813f96c7",
+      "bytes": 2531,
+      "path": "product-receipt.json",
+      "sha256": "13ea586612c3fae0e25b9318fbae2eb1560968980e276cdc73cfe6bc72c43108"
+    }
+  ],
+  "product_branch": "cloud/fv-delivery-artifact-metadata-retry-1",
+  "product_head": "780a3ca169bcce9599e487c02592a31103734740",
+  "ref": "refs/heads/evidence/fv-delivery-artifact-metadata-retry-1",
+  "repository": "runeditrun/delivery",
+  "schema": 1,
+  "tag": "fv-delivery-artifact-metadata-retry-1"
+}

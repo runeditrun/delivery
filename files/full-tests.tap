@@ -1,0 +1,71 @@
+✔ 404 immediately after upload retries the same artifact and succeeds (249.91058ms)
+✔ persistent 404 and 5xx exhaust the attempt or time budget with the last HTTP reason (624.404644ms)
+✔ 401 and 403 refuse immediately without retry (330.692352ms)
+✔ over-limit metadata refuses once with measured and allowed bytes (176.44166ms)
+✔ under-limit and exactly 64 MiB metadata succeed with their byte counts (377.777887ms)
+✔ transport and 429 retry with bounded Retry-After; stalled reads and bodies expire (1042.655141ms)
+✔ invalid size, artifact identity or JSON fails closed without retry (1413.807452ms)
+✔ isolated producer hashes canonical inputs identically across runs and object order (630.842975ms)
+✔ each source, workflow, profile, toolchain and supplied argument changes the produced identity (6621.832625ms)
+✔ missing or forged observations never make a hosted build promotable (979.678397ms)
+✔ real project commands lose GitHub environment but can read time, git and network, so their artifacts stay ineligible (707.815728ms)
+✔ isolated Node pin resolution follows immutable source precedence and never executes bootstrap (975.953679ms)
+✔ native schema-2 attestation preserves exact manifest and all binary payload bytes (151.459734ms)
+✔ native payload identities cannot redirect reads or substitute bytes (1635.821669ms)
+✔ native payload symlinks and parent-directory links fail without copying outside bytes (274.904477ms)
+✔ the first exact pin wins across files, manifest fields and a literal bootstrap without executing it (382.009238ms)
+✔ no pin, ranges, partial versions, aliases and dynamic bootstrap declarations use the configured fallback (624.185555ms)
+✔ producer schema-1 stages byte-identical files in a fresh external tree (138.930004ms)
+✔ producer schema-2 stages byte-identical files in a fresh external tree (209.119315ms)
+✔ producer rejects unsafe and reserved artifact filenames before accessing content (1680.619167ms)
+✔ producer rejects symbolic links at every upload boundary and nested entry before opening content (2769.642304ms)
+✔ producer rejects hard-linked manifest and payload files before opening content (375.050506ms)
+✔ producer requires directory package and payload roots and a regular manifest (648.145862ms)
+✔ producer refuses named pipe without opening it (607.559704ms)
+✔ producer refuses socket without opening it (620.072283ms)
+✖ producer refuses character device without opening it (8.89939ms)
+✖ producer refuses block device without opening it (9.238246ms)
+✔ producer detects leaf inode substitution and removes a partly copied snapshot (192.146694ms)
+✔ producer refuses a leaf symlink substituted at open without reading its target (172.079221ms)
+✔ producer refuses a FIFO substituted at open without blocking (171.380432ms)
+✔ producer detects directory substitution even when the leaf inode stays the same (135.282091ms)
+✔ producer rechecks the opened file link count after inventory (139.445634ms)
+✔ producer rejects content changes while copying and discards the snapshot (127.112917ms)
+✔ producer refuses staging locations inside the workspace or without an absolute runner path (375.798819ms)
+✔ project-owned commands receive declared pnpm, work undeclared and propagate failure (2399.741503ms)
+✔ isolated attestation binds generic package to immutable descriptor and source tree without source lock (132.642503ms)
+✔ isolated provenance records the build runtime rather than its own Node and rejects invalid runtime outputs (1451.222203ms)
+✔ immutable descriptor mismatch prevents generic attestation (148.766656ms)
+✔ only isolated attestation job has OIDC and never checks out candidate (0.530994ms)
+✔ attestation rejects traversal, secret entries, wrong broker origins and filename substitution (1527.041587ms)
+✔ candidate manifest symlinks and missing generic deployment specifications are rejected (314.990562ms)
+✔ registered default artifact filename works in build and independent attestation (468.243378ms)
+✔ prepare automatically retries transient and uncertain outcomes with the identical payload (845.867794ms)
+✔ prepare stops at a bounded typed exhaustion for persistent transient failures (444.04106ms)
+✔ prepare never retries definite authentication, provenance or validation refusals (887.114769ms)
+✔ OIDC retryable authorization preserves Retry-After before renewing (198.850853ms)
+✔ slow bounded OIDC renewal leaves a full broker response window (133.246184ms)
+ℹ tests 47
+ℹ suites 0
+ℹ pass 45
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 13593.202528
+
+✖ failing tests:
+
+test at tests/producer-stage.test.mjs:142:85
+✖ producer refuses character device without opening it (8.89939ms)
+  TypeError: Cannot read properties of undefined (reading 'trim')
+      at TestContext.<anonymous> (file:///workspace/delivery/tests/producer-stage.test.mjs:157:83)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+
+test at tests/producer-stage.test.mjs:142:85
+✖ producer refuses block device without opening it (9.238246ms)
+  TypeError: Cannot read properties of undefined (reading 'trim')
+      at TestContext.<anonymous> (file:///workspace/delivery/tests/producer-stage.test.mjs:157:83)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)

@@ -1,0 +1,70 @@
+{
+  "repository": "runeditrun/delivery",
+  "branch": "cloud/fv-delivery-artifact-metadata-retry-1",
+  "head": "780a3ca169bcce9599e487c02592a31103734740",
+  "base": "ff70d729948753ffdcceeca94aad063af2dcd979",
+  "remote_product_head": "780a3ca169bcce9599e487c02592a31103734740",
+  "worktree_clean": true,
+  "observed_at": "2026-11-09T17:55:20.375362+00:00",
+  "pr": {
+    "base": "main",
+    "draft": true,
+    "head": "780a3ca169bcce9599e487c02592a31103734740",
+    "html_url": "https://github.com/runeditrun/delivery/pull/11",
+    "number": 11
+  },
+  "candidate_commits": "780a3ca169bcce9599e487c02592a31103734740\nRun Edit Run fleet <fleet@runeditrun.com>\nRun Edit Run fleet <fleet@runeditrun.com>\n\nRetry transient trusted artifact metadata reads within a fixed budget",
+  "changed_files": [
+    ".github/workflows/trusted-build.yml",
+    "tests/artifact-metadata.test.mjs"
+  ],
+  "product_push": {
+    "command": "python3 /home/agent/rer-consolidation/.tools/cloud-push.py origin cloud/fv-delivery-artifact-metadata-retry-1",
+    "attempts": 1,
+    "result": "PUSH_OK; remote head independently verified with git ls-remote"
+  },
+  "ci": {
+    "observed_at": "2026-11-09T17:55:20.375362+00:00",
+    "github_api_calls_used": 2,
+    "required_workflow": "Verify delivery",
+    "run": {
+      "conclusion": "success",
+      "head_sha": "780a3ca169bcce9599e487c02592a31103734740",
+      "html_url": "https://github.com/runeditrun/delivery/actions/runs/42668913217",
+      "id": 42668913217,
+      "name": "Verify delivery",
+      "status": "completed"
+    },
+    "source": "Actual REST exact-SHA discovery response in ci-discovery.json; completed/success at discovery; no polling or failed-log reads needed."
+  },
+  "focused_tests": {
+    "command": "node --test tests/artifact-metadata.test.mjs",
+    "total": 7,
+    "passed": 7,
+    "failed": 0,
+    "transcript": "metadata-tests.tap"
+  },
+  "full_local_tests": {
+    "before": {
+      "total": 40,
+      "passed": 38,
+      "failed": 2
+    },
+    "after": {
+      "total": 47,
+      "passed": 45,
+      "failed": 2
+    },
+    "cause": "sudo executable absent; unchanged producer-stage.test.mjs:157 calls trim on undefined stderr on ENOENT",
+    "transcripts": [
+      "baseline-tests.tap",
+      "full-tests.tap"
+    ]
+  },
+  "clause": {
+    "id": "U96-01",
+    "before": "valid build can fail on immediate metadata 404",
+    "after": "candidate implementation proved locally and exact-SHA Verify green; fleet landing/adoption pending",
+    "contract_file_present": false
+  }
+}

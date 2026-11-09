@@ -1,0 +1,12 @@
+# Plan: fv-delivery-artifact-metadata-retry-1
+
+Scope: runeditrun/delivery only; product branch cloud/fv-delivery-artifact-metadata-retry-1. Change only trusted-build.yml's post-upload metadata validation and one focused executable test file. Do not adopt a pin, change platform code, or deploy.
+
+1. Read launcher/repository rules, inspect current main and establish the existing validation/test baseline.
+2. Retain the accepted artifact ID and upload digest. Retry only metadata GETs for that ID on 404, 429, 500–599 and transport/timeouts. Limit to 8 attempts, 60 seconds overall, 5 seconds per read including body, growing 1–7 second delays, and Retry-After seconds/HTTP-date capped at 10 seconds. Refuse definite responses immediately. Exhaustion includes last HTTP status and attempts.
+3. Retain safe-integer, nonnegative size and 64 MiB cap; explicitly bind metadata ID/digest to upload outputs. Report measured/allowed bytes on an oversized archive.
+4. Execute the real inline workflow program extracted by the existing helper, faking GitHub fetch responses at the network edge and advancing time. Prove delayed 404 success, bounded persistent 404/5xx, immediate 401/403, over-limit refusal and under-limit byte reporting, plus transport/429/deadline/integrity boundaries in the same focused file.
+5. Run focused and existing contract tests, inspect the diff, install fleet hooks, commit with fleet identity, inspect every candidate commit identity/trailer, and push only the named cloud branch through the guard. Create a draft PR using REST; observe exact-SHA Verify through REST within the ten-call budget (at most one observation per run every 300 seconds).
+6. Save complete non-secret reports and actual receipts outside the product checkout. Publish only explicitly selected packet files to the evidence ref; report product and evidence custody separately. Return lane POST lines and end with READY only after exact-head Verify succeeds.
+
+Evidence from brief: the two failing archives were 3,069,901 bytes versus 67,108,864 allowed. Metadata 404s arrived 0.26–0.29 seconds after upload finalization; a passing read arrived at 0.30 seconds. These observations support short initial waits and a bounded tolerance for metadata visibility, without changing the cap or rebuilding candidate code. Minute-later metadata visibility is supporting diagnosis, not an assurance that this finite budget always succeeds.
