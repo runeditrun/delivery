@@ -124,7 +124,7 @@ test('registered default artifact filename works in build and independent attest
 });
 
 const prepareScript = workflowScript('Prepare release through authenticated broker');
-async function prepareClient(t, responses, oidc = {}) {
+async function prepareClient(t, responses, oidc = {}, pinMode = false) {
  const dir = await temporary(t);
  await mkdir(join(dir, 'accepted'));
  await writeFile(join(dir, 'accepted/release-provenance.json'), JSON.stringify({ runId: '77', runAttempt: '1', commitSha: 'b'.repeat(40) }));
@@ -143,13 +143,13 @@ async function prepareClient(t, responses, oidc = {}) {
      console.log('OIDC ' + Date.now()); oidcCalls++;
      if (oidc.retryAfter && oidcCalls === 1) return new Response(null, {status:429,headers:{'Retry-After':String(oidc.retryAfter)}});
      if (oidc.latency && oidcCalls === 1) mock.timers.tick(oidc.latency);
-     return Response.json({value:'synthetic-oidc-1'});
+     return Response.json({value:'synthetic-oidc-'+oidcCalls});
    }
    if (oidc.latency) {
      init.signal.addEventListener('abort', () => console.log('POST_ABORT'), {once:true});
      mock.timers.tick(90000);
    }
-   requests.push({ body: init.body, signal: Boolean(init.signal) });
+   requests.push({ url: String(url), body: init.body, signal: Boolean(init.signal), authorization: init.headers.Authorization });
    console.log('REQUEST ' + JSON.stringify(requests.at(-1)));
    const answer = responses[Math.min(requests.length - 1, responses.length - 1)];
    if (answer === 'timeout') return new Promise((resolve, reject) => {
@@ -163,50 +163,76 @@ async function prepareClient(t, responses, oidc = {}) {
  };
  `;
  try {
-  return { ok: true, output: run(prelude + prepareScript, dir, { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example/?x=1', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'synthetic-token-1', INSTALLATION_ID: 'synthetic-installation-1', RELEASE_ENVIRONMENT: 'production', ARTIFACT_ID: '5', ARCHIVE_DIGEST: 'a'.repeat(64), GITHUB_REF: 'refs/heads/main' }).toString() };
+  return { ok: true, output: run(prelude + prepareScript, dir, { BROKER_URL: 'https://broker.example', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.example/?x=1', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'synthetic-token-1', INSTALLATION_ID: 'synthetic-installation-1', RELEASE_ENVIRONMENT: 'production', ARTIFACT_ID: '5', ARCHIVE_DIGEST: 'a'.repeat(64), GITHUB_REF: 'refs/heads/main', PIN_MODE: String(pinMode) }).toString() };
  } catch (error) { return { ok: false, output: error.stdout.toString() + error.stderr.toString() }; }
 }
 const requests = result => result.output.split('\n').filter(line => line.startsWith('REQUEST ')).map(line => JSON.parse(line.slice(8)));
+const preparedResponse = (pinMode, status = 201) => ({status, body:{[pinMode ? 'pinArtifact' : 'release']:{id:'a'.repeat(64)}}});
 
 test('prepare automatically retries transient and uncertain outcomes with the identical payload', async t => {
+ for (const pinMode of [false, true]) {
  for (const first of ['timeout', 'body-stall', 'lost', {status:503, body:{code:'provenance_pending',retryAfter:30}}, {status:502}, {status:429,headers:{'retry-after':'3'}}]) {
-  const result = await prepareClient(t, [first, {status:201,body:{release:{id:'a'.repeat(64)}}}]);
+  const result = await prepareClient(t, [first, preparedResponse(pinMode)], {}, pinMode);
   assert.equal(result.ok, true, result.output);
   assert.equal(requests(result).length, 2, result.output);
   assert.ok(requests(result).every(request => request.signal));
   assert.equal(new Set(requests(result).map(request => request.body)).size, 1);
+  assert.ok(requests(result).every(request => request.url === `https://broker.example/api/delivery/broker/${pinMode ? 'prepare-pin' : 'prepare'}`));
+  assert.equal(JSON.parse(requests(result)[0].body).environment, 'production');
+  assert.equal(new Set(requests(result).map(request => request.authorization)).size, 2);
  }
+ }
+ const reused = await prepareClient(t, ['lost', preparedResponse(true, 200)], {}, true);
+ assert.equal(reused.ok, true, reused.output);
+ assert.equal(requests(reused).length, 2, reused.output);
+ assert.equal(new Set(requests(reused).map(request => request.body)).size, 1);
 });
 test('prepare stops at a bounded typed exhaustion for persistent transient failures', async t => {
+ for (const pinMode of [false, true]) {
  for (const first of ['timeout', {status:503,body:{code:'prepare_pending',retryAfter:30}}, {status:503,headers:{'retry-after':'999'}}]) {
-  const result = await prepareClient(t, [first]);
+  const result = await prepareClient(t, [first], {}, pinMode);
   assert.equal(result.ok, false);
   assert.match(result.output, /prepare_retry_exhausted/);
   assert.ok(requests(result).length <= 4);
  }
+ }
 });
 test('prepare never retries definite authentication, provenance or validation refusals', async t => {
+ for (const pinMode of [false, true]) {
  for (const status of [400,401,403,409,422,500,503]) {
-  const result = await prepareClient(t, [{status,body:{code:'delivery_validation_rejected',error:'synthetic private detail'}}]);
+  const result = await prepareClient(t, [{status,body:{code:'delivery_validation_rejected',error:'synthetic private detail'}}], {}, pinMode);
   assert.equal(result.ok, false);
   assert.equal(requests(result).length, 1);
   assert.doesNotMatch(result.output, /synthetic private detail/);
  }
+ for (const response of [preparedResponse(!pinMode), {status:201,body:{[pinMode ? 'pinArtifact' : 'release']:{id:'invalid'}}}, preparedResponse(pinMode, 202)]) {
+  const result = await prepareClient(t, [response], {}, pinMode);
+  assert.equal(result.ok, false, result.output);
+  assert.equal(requests(result).length, 1, result.output);
+ }
+ }
+ const ordinaryReuse = await prepareClient(t, [preparedResponse(false, 200)]);
+ assert.equal(ordinaryReuse.ok, false, ordinaryReuse.output);
+ assert.equal(requests(ordinaryReuse).length, 1, ordinaryReuse.output);
 });
 
 
 test('OIDC retryable authorization preserves Retry-After before renewing', async t => {
- const result = await prepareClient(t, [{status:201,body:{release:{id:'a'.repeat(64)}}}], {retryAfter:30});
+ for (const pinMode of [false, true]) {
+ const result = await prepareClient(t, [preparedResponse(pinMode)], {retryAfter:30}, pinMode);
  assert.equal(result.ok,true,result.output);
  const times=result.output.split('\n').filter(line=>line.startsWith('OIDC ')).map(line=>Number(line.slice(5)));
  assert.equal(times.length,2,result.output);
  assert.equal(times[1]-times[0],30000,result.output);
  assert.equal(requests(result).length,1);
+ }
 });
 
 test('slow bounded OIDC renewal leaves a full broker response window', async t => {
- const result = await prepareClient(t, [{status:201,body:{release:{id:'a'.repeat(64)}}}], {latency:119999});
+ for (const pinMode of [false, true]) {
+ const result = await prepareClient(t, [preparedResponse(pinMode)], {latency:119999}, pinMode);
  assert.equal(result.ok,true,result.output);
  assert.doesNotMatch(result.output,/POST_ABORT/);
  assert.equal(requests(result).length,1,result.output);
+ }
 });
