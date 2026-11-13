@@ -1,0 +1,68 @@
+{
+  "checks": {
+    "actual_main_source_inspection": "completed",
+    "evidence_publication": "separate transport, only authorized evidence ref; exact output retained by terminal",
+    "key_setup": "NOT RUN; launcher refresh used only for required Git transport bootstrap",
+    "owner_consent_requested": false,
+    "product_push_or_pr_or_ci_dispatch": false,
+    "product_worktree_clean": "passed",
+    "provider_consent": "NOT RUN",
+    "provider_runtime_sql_dns_flags_secrets_accounts": "NOT ACCESSED OR MODIFIED",
+    "rehearsal": "NOT RUN",
+    "source_paths_and_hashes": "passed",
+    "tests": "NOT RUN; planner inspected existing tests; no code/dependency changes",
+    "tokens_minted": false
+  },
+  "inspected_source_files": 64,
+  "kind": "read-only-planning",
+  "limitations": [
+    "Live deployment identity and provider settings not read; repository config is intended state only.",
+    "Installations 23475464 and install4 were supplied in brief; actual identity/custody unavailable from inspected source.",
+    "No local fleet lane inbox/ChargeDesk shared plan exists in this VM; final text relays to pr.",
+    "No event-actors writer identity found in current source or matching open PR titles; reserved to existing writer."
+  ],
+  "observed_at_utc": "2026-11-13T23:41:42Z",
+  "packet_validation": {
+    "credential_shaped_matches": 0,
+    "evidence_identity_guard": "installed outside product repos; audits all origin/main..HEAD parents before each report push, fleet identity required",
+    "product_candidate_identity_logs": "empty in both unchanged product checkouts",
+    "regular_files": true,
+    "report_queue_block": "exact empty queue-entries block",
+    "selected_files": [
+      "REPORT.md",
+      "STEP7.md",
+      "VIEWER.md",
+      "PLANNING-RECEIPT.json",
+      "SOURCE-INDEX.json"
+    ],
+    "symlinks": 0,
+    "validated_at_utc": "2026-11-13T23:47:39Z"
+  },
+  "pr397": {
+    "head": "3eb2bb6f8410f4bf3b00a61d4855b15d777185ef",
+    "merged": false,
+    "read_via": "gh api repos/runeditrun/platform/pulls/397",
+    "state": "open",
+    "url": "https://github.com/runeditrun/platform/pull/397"
+  },
+  "repositories": [
+    {
+      "branch": "main",
+      "clean": true,
+      "head": "86030a5c51a7774132693e8715da2a22e3676b56",
+      "product_changes": false,
+      "product_commits": 0,
+      "repository": "runeditrun/platform"
+    },
+    {
+      "branch": "main",
+      "clean": true,
+      "head": "f50b72a5fdaaed2fac2fc615716b3f1d3c62b47a",
+      "product_changes": false,
+      "product_commits": 0,
+      "repository": "runeditrun/delivery"
+    }
+  ],
+  "schema": 1,
+  "task": "pr-assisted-stage-plan-1"
+}

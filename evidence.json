@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "blob": "eb501d8f5883e71ef28b10654f6f7dd0432c8861",
+      "bytes": 2643,
+      "path": "PLANNING-RECEIPT.json",
+      "sha256": "d7fa8985d80a6f0111db7855949878526ac01b7ac544d0cb8dddd3568199c5b5"
+    },
+    {
+      "blob": "accef119bf7a3432f93a95277170ae0d2de3834e",
+      "bytes": 30600,
+      "path": "REPORT.md",
+      "sha256": "b7bf23c47562aa4aeb3982411ec35a71ada6894d1d382969b1a6dd017a4b80c2"
+    },
+    {
+      "blob": "97d7a4d6cbdc55c2d8a32a32e6d5767505cf7ad0",
+      "bytes": 24483,
+      "path": "SOURCE-INDEX.json",
+      "sha256": "3a7418846980c4e08afd7e83a4ab3b1745f2dfdaa0dd5cef1eaee973b6ffbf07"
+    },
+    {
+      "blob": "dcf140603cf906a66f691001ce0d79902cf85fd5",
+      "bytes": 7226,
+      "path": "STEP7.md",
+      "sha256": "eab7d8ab10f6cb33ae03be466551030228b19b5944904a87b083a73e0a2e0d16"
+    },
+    {
+      "blob": "9cf22478eb7c5c7edf8963286f0722b1d2a81269",
+      "bytes": 7477,
+      "path": "VIEWER.md",
+      "sha256": "5efee26a09cd0b25917592eaedd26f7c2b0ad6f51465cd4274d2c1b862b9c0f3"
+    }
+  ],
+  "product_branch": "main",
+  "product_head": "f50b72a5fdaaed2fac2fc615716b3f1d3c62b47a",
+  "ref": "refs/heads/evidence/pr-assisted-stage-plan-1",
+  "repository": "runeditrun/delivery",
+  "schema": 1,
+  "tag": "pr-assisted-stage-plan-1"
+}
